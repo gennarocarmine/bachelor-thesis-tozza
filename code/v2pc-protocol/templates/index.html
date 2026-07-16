@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V2PC - Generatore di share</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <nav class="nav">
+    <a href="/" class="{% if request.path == '/' %}on{% endif %}">Genera share</a>
+    <a href="/due" class="{% if request.path == '/due' %}on{% endif %}">Esempio a due parti</a>
+  </nav>
+  <h1>V2PC - Generatore di share</h1>
+  <p class="sub">Scrivi una formula booleana, scegli i valori delle variabili e genera le trasparenze di ogni filo. Le share sono prodotte dal codice del protocollo: si stampano su lucido e si sovrappongono per leggere il risultato.</p>
+
+  <form method="post" action="/genera" class="card">
+    <label for="formula">Formula</label>
+    <input type="text" id="formula" name="formula" value="{{ formula }}" spellcheck="false" autocomplete="off">
+    <p class="hint">Operatori: &amp; (AND), | (OR), ^ (XOR), ~ (NOT). Le variabili che iniziano per x sono di Alice, quelle per y di Bob.</p>
+
+    <label>Valori delle variabili</label>
+    <div id="vars" class="vars"></div>
+
+    <div class="row">
+      <div>
+        <label for="size">Dimensione immagine</label>
+        <input type="number" id="size" name="size" value="{{ size }}" min="4" max="128" step="4">
+      </div>
+      <div>
+        <label for="seed">Seme (opzionale)</label>
+        <input type="text" id="seed" name="seed" value="{{ seed }}" placeholder="casuale" autocomplete="off">
+      </div>
+      <label class="check"><input type="checkbox" name="show_both" {% if show_both %}checked{% endif %}> mostra entrambe le trasparenze</label>
+      <label class="check"><input type="checkbox" name="show_circuit" {% if show_circuit %}checked{% endif %}> disegna il circuito</label>
+    </div>
+
+    <button type="submit">Genera le share</button>
+  </form>
+
+  {% if error %}
+  <p class="error">{{ error }}</p>
+  {% endif %}
+
+  {% if result %}
+  <section class="result">
+    <div class="summary {% if result.letto == result.vero %}ok{% else %}no{% endif %}">
+      valore letto = {{ result.letto }} &nbsp;·&nbsp; valore vero = {{ result.vero }} &nbsp;·&nbsp;
+      {% if result.letto == result.vero %}corretto{% else %}discordanza{% endif %}
+    </div>
+
+    <div class="tile">
+      <img src="{{ result.output }}" alt="immagine di uscita">
+      <div class="cap">uscita</div>
+    </div>
+
+    {% if result.circuit %}
+    <h2>Il circuito con le share</h2>
+    <p class="hint">Ingressi in fondo, uscita in cima. Su ogni filo la share che vi transita; sul filo sinistro di ogni porta il pointer bit p. Le due share che entrano in una porta sono la porta visuale: a sinistra pointer piu' sh1, a destra la share doppia.</p>
+    <div class="circuit"><img src="{{ result.circuit }}" alt="disegno del circuito con le share"></div>
+    <form method="post" action="/scarica-circuito" class="dl">
+      <input type="hidden" name="formula" value="{{ formula }}">
+      <input type="hidden" name="size" value="{{ size }}">
+      <input type="hidden" name="seed" value="{{ seed }}">
+      {% for n, v in result.assign.items() %}
+      <input type="hidden" name="val_{{ n }}" value="{{ v }}">
+      {% endfor %}
+      <button type="submit">Scarica il disegno (PNG)</button>
+    </form>
+    {% endif %}
+
+    <h2>Trasparenze dei fili</h2>
+    <div class="wire-grid">
+      {% for w in result.wires %}
+      <div class="wire">
+        <img src="{{ w.used }}" alt="share del filo {{ w.label }}">
+        <div class="cap">{{ w.label }} = {{ w.value }}</div>
+        {% if w.s0 %}
+        <div class="both">
+          <div><img src="{{ w.s0 }}" alt="valore 0"><span>val 0</span></div>
+          <div><img src="{{ w.s1 }}" alt="valore 1"><span>val 1</span></div>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <form method="post" action="/scarica" class="dl">
+      <input type="hidden" name="formula" value="{{ formula }}">
+      <input type="hidden" name="size" value="{{ size }}">
+      <input type="hidden" name="seed" value="{{ seed }}">
+      {% for n, v in result.assign.items() %}
+      <input type="hidden" name="val_{{ n }}" value="{{ v }}">
+      {% endfor %}
+      <button type="submit">Scarica le trasparenze (ZIP)</button>
+    </form>
+  </section>
+  {% endif %}
+</main>
+
+<script>
+const INIT = {{ (result.assign | tojson) if result else '{}' }};
+
+function extractVars(f){
+  const m = f.match(/[A-Za-z_]\w*/g) || [];
+  const out = [];
+  for(const t of m){ if(!out.includes(t)) out.push(t); }
+  return out;
+}
+function currentValues(){
+  const v = {};
+  document.querySelectorAll('#vars input[type=hidden]').forEach(h => { v[h.dataset.name] = h.value; });
+  return v;
+}
+function renderVars(){
+  const wrap = document.getElementById('vars');
+  const prev = currentValues();
+  const vars = extractVars(document.getElementById('formula').value);
+  wrap.innerHTML = '';
+  if(vars.length === 0){ wrap.innerHTML = '<span class="muted">nessuna variabile</span>'; return; }
+  for(const name of vars){
+    let val = (name in prev) ? prev[name] : (name in INIT ? String(INIT[name]) : '0');
+    const chip = document.createElement('div'); chip.className = 'chip';
+    const hidden = document.createElement('input');
+    hidden.type = 'hidden'; hidden.name = 'val_' + name; hidden.dataset.name = name; hidden.value = val;
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'toggle';
+    const paint = () => { btn.textContent = name + ' = ' + hidden.value; btn.classList.toggle('on', hidden.value === '1'); };
+    btn.addEventListener('click', () => { hidden.value = hidden.value === '1' ? '0' : '1'; paint(); });
+    paint();
+    chip.appendChild(hidden); chip.appendChild(btn); wrap.appendChild(chip);
+  }
+}
+document.getElementById('formula').addEventListener('input', renderVars);
+renderVars();
+</script>
+</body>
+</html>
