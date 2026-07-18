@@ -35,7 +35,7 @@ pip install -r requirements.txt
 
 ## Command-line usage
 
-From the `code/` folder:
+From the `code/v2pc-protocol` folder:
 
 ```bash
 # evaluate a function on an input (prints the true result and the visual one)
