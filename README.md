@@ -1,12 +1,9 @@
-# bachelor-s-thesis-tozza
-
-Implementazione in Python del protocollo **V2PC** (_Visual Two-Party Computation_) di D'Arco e De Prisco.
-Python implementation of the **V2PC** protocol (_Visual Two-Party Computation_) by D'Arco and De Prisco.
+# bachelor-thesis-tozza
 
 Repository of a Bachelor's thesis in Computer Science — University of Salerno.
-Candidate: **Gennaro Carmine Tozza** · Advisor: **Prof. Roberto De Prisco**.
+Candidate: **Gennaro Carmine Tozza**. Advisor: **Prof. Roberto De Prisco**.
 
-## Indice · Table of contents
+## Indice - Table of contents
 
 **[Italiano](#italiano)**
 
@@ -28,8 +25,9 @@ Candidate: **Gennaro Carmine Tozza** · Advisor: **Prof. Roberto De Prisco**.
 
 ---
 
-# Italiano
+# 🇮🇹 Italiano
 
+Implementazione in Python del protocollo **V2PC** (_Visual Two-Party Computation_) di D'Arco e De Prisco.
 Due parti calcolano una funzione booleana sui propri input privati usando soltanto
 **trasparenze da sovrapporre**, senza chiavi e senza algoritmi di cifratura nella fase di
 calcolo. Il computer serve una sola volta, per preparare le trasparenze; da lì in poi il
@@ -51,7 +49,7 @@ Il protocollo implementato qui:
 
 Serve Python 3.10 o successivo.
 
-**. Clona il repository**
+**1. Clona il repository**
 
 ```bash
 git clone https://github.com/gennarocarmine/bachelor-s-thesis-tozza.git
@@ -60,7 +58,7 @@ cd bachelor-s-thesis-tozza
 
 Scarica il progetto ed entra nella cartella appena creata.
 
-**. Installa le dipendenze**
+**2. Installa le dipendenze**
 
 ```bash
 pip install -r requirements.txt
@@ -77,22 +75,19 @@ python3 cli.py evaluate "(x1|y1) & ((x2&y2) & (x3|y3))" \
         --input x1=0,y1=1,x2=1,y2=1,x3=1,y3=0
 ```
 
-Valuta la funzione sull'input indicato e stampa il risultato vero accanto a quello ottenuto
-per via visuale, segnalando se coincidono.
+> Valuta la funzione sull'input indicato e stampa il risultato vero accanto a quello ottenuto per via visuale segnalando se coincidono.
 
 ```bash
 python3 cli.py shares "x1 & y1" --input x1=1,y1=1 --out share
 ```
 
-Salva nella cartella `share` le trasparenze usate per quell'input, come immagini pronte da
-stampare su lucido.
+> Salva nella cartella `share` le trasparenze usate per quell'input, come immagini pronte da stampare su lucido.
 
 ```bash
 python3 cli.py multi "x ^ y" "x & y" --input x=1,y=1
 ```
 
-Valuta una funzione a più bit di uscita, una espressione per ciascun bit: qui un half-adder,
-con la somma e il riporto.
+> Valuta una funzione a più bit di uscita, una espressione per ciascun bit: qui un half-adder, con la somma e il riporto.
 
 **Sintassi delle funzioni.** Operatori `&` (AND), `|` (OR), `^` (XOR), `~` (NOT), con le
 parentesi; le porte NAND, NOR e XNOR si scrivono come `~(a&b)`, `~(a|b)`, `~(a^b)`. Per
@@ -135,8 +130,9 @@ La tesi completa (in italiano) è in [`docs/main.pdf`](docs/main.pdf).
 
 ---
 
-# English
+# 🇬🇧 English
 
+Python implementation of the **V2PC** protocol (_Visual Two-Party Computation_) by D'Arco and De Prisco.
 Two parties evaluate a boolean function on their private inputs using only **transparencies
 to overlay**, with no keys and no encryption algorithms in the computation phase. A computer
 is needed only once, to prepare the transparencies; from then on the computation is pure
@@ -158,7 +154,7 @@ The protocol implemented here:
 
 Python 3.10 or later is required.
 
-**. Clone the repository**
+**1. Clone the repository**
 
 ```bash
 git clone https://github.com/gennarocarmine/bachelor-s-thesis-tozza.git
@@ -167,7 +163,7 @@ cd bachelor-s-thesis-tozza
 
 Downloads the project and enters the folder just created.
 
-**. Install the dependencies**
+**2. Install the dependencies**
 
 ```bash
 pip install -r requirements.txt
@@ -184,22 +180,19 @@ python3 cli.py evaluate "(x1|y1) & ((x2&y2) & (x3|y3))" \
         --input x1=0,y1=1,x2=1,y2=1,x3=1,y3=0
 ```
 
-Evaluates the function on the given input and prints the true result next to the one obtained
-visually, reporting whether they match.
+> Evaluates the function on the given input and prints the true result next to the one obtained visually, reporting whether they match.
 
 ```bash
 python3 cli.py shares "x1 & y1" --input x1=1,y1=1 --out share
 ```
 
-Saves into the `share` folder the transparencies used for that input, as images ready to be
-printed on acetate.
+> Saves into the `share` folder the transparencies used for that input, as images ready to be printed on acetate.
 
 ```bash
 python3 cli.py multi "x ^ y" "x & y" --input x=1,y=1
 ```
 
-Evaluates a multi-output function, one expression per output bit: here a half-adder, with the
-sum and the carry.
+> Evaluates a multi-output function, one expression per output bit: here a half-adder, with the sum and the carry.
 
 **Function syntax.** Operators `&` (AND), `|` (OR), `^` (XOR), `~` (NOT), with parentheses;
 the NAND, NOR and XNOR gates are written as `~(a&b)`, `~(a|b)`, `~(a^b)`. By convention,
