@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>V2PC</title>
+  <meta name="description" content="Demo didattica del protocollo Visual Two-Party Computation">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+  {% macro render_pointer_blocks(blocks) %}
+    <div class="paper-bits">
+      {% for block in blocks %}
+        <span class="pointer-block" aria-label="blocco pointer 1 per 2">
+          <i class="pointer-subpixel pointer-subpixel--{{ block[0] }}"></i>
+          <i class="pointer-subpixel pointer-subpixel--{{ block[1] }}"></i>
+        </span>
+      {% endfor %}
+    </div>
+  {% endmacro %}
+
+  {% macro render_circuit_node(node) %}
+  <li class="circuit-branch circuit-branch--{{ node.kind }}">
+    <div class="circuit-node circuit-node--{{ node.kind }}">
+      {% if node.kind == "input" %}
+        <div class="circuit-input-heading">
+          <span>input</span>
+          <strong>{{ node.label }} = {{ node.share.value }}</strong>
+        </div>
+        <div class="mini-share-pair">
+          <img class="mini-share-image" src="{{ node.share.paper_image }}"
+               alt="Share selezionata di {{ node.label }} con blocchi pointer">
+          <div class="mini-pointer" title="Ingrandimento dei blocchi pointer 1 per 2">
+            {% if node.share.pointer_clear %}
+              <div>
+                <span>p</span>
+                {{ render_pointer_blocks(node.share.pointer_clear_blocks) }}
+              </div>
+            {% endif %}
+            {% if node.share.pointer_inner %}
+              <div>
+                <span>pᵢ</span>
+                {{ render_pointer_blocks(node.share.pointer_inner_blocks) }}
+              </div>
+            {% endif %}
+            {% if not node.share.pointer_clear and not node.share.pointer_inner %}
+              <span class="no-pointer">—</span>
+            {% endif %}
+          </div>
+        </div>
+      {% elif node.kind == "not" %}
+        <div class="gate-symbol gate-symbol--not" aria-label="Porta NOT">
+          <span>NOT</span>
+          <i aria-hidden="true"></i>
+        </div>
+      {% else %}
+        <div class="gate-symbol gate-symbol--{{ node.label|lower }}"
+             aria-label="Porta {{ node.label }}">
+          <span>{{ node.step.output_name }} · {{ node.label }}</span>
+        </div>
+        <div class="gate-output">
+          <img src="{{ node.step.image }}"
+               alt="Share in uscita dalla porta {{ node.label }}">
+          <span>uscita {{ node.step.decoded_value }}</span>
+        </div>
+      {% endif %}
+    </div>
+    {% if node.children %}
+    <ul>
+      {% for child in node.children %}
+        {{ render_circuit_node(child) }}
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </li>
+  {% endmacro %}
+
+  <main>
+    <header class="hero">
+      <h1>Visual Two-Party Computation</h1>
+      <p class="lede">
+        Costruisci le share, segui il pointer bit e osserva la sovrapposizione trasformarsi nel risultato della funzione.
+      </p>
+    </header>
+
+    <section class="panel controls" aria-label="Configurazione esperimento">
+      <form method="post">
+        <label for="expression">
+          Funzione booleana
+          <input id="expression" name="expression" value="{{ expression }}"
+                 required spellcheck="false" autocomplete="off"
+                 aria-describedby="syntax-help">
+        </label>
+        <p id="syntax-help" class="hint">Operatori: &amp; AND, | OR, ^ XOR, ~ NOT. Le variabili che iniziano per x sono di Alice, quelle per y di Bob.</p>
+
+        <div class="variable-config" aria-labelledby="variables-title">
+          <div class="variable-config-heading">
+            <span id="variables-title">Valori delle variabili</span>
+            <small>Seleziona 0 oppure 1</small>
+          </div>
+          <div id="variable-controls" class="variable-controls">
+            {% for variable in input_variables %}
+            <fieldset class="variable-choice" data-variable="{{ variable.name }}">
+              <legend>{{ variable.name }}</legend>
+              <div>
+                <label>
+                  <input type="radio" name="variable_{{ loop.index0 }}" value="0"
+                         {{ "checked" if variable.value == 0 else "" }}>
+                  <span>0</span>
+                </label>
+                <label>
+                  <input type="radio" name="variable_{{ loop.index0 }}" value="1"
+                         {{ "checked" if variable.value == 1 else "" }}>
+                  <span>1</span>
+                </label>
+              </div>
+            </fieldset>
+            {% endfor %}
+          </div>
+          <p id="variables-empty" class="variables-empty" hidden>
+            Scrivi una formula valida per vedere gli ingressi.
+          </p>
+          <input id="assignment" type="hidden" name="assignment"
+                 value="{{ assignment }}">
+        </div>
+
+        <div class="form-row">
+          <label>
+            Lato immagine
+            <input type="number" name="side" value="{{ side }}" min="8" max="64">
+          </label>
+          <label>
+            Seme (opzionale)
+            <input type="number" name="seed"
+                   value="{{ '' if seed is none else seed }}"
+                   placeholder="casuale"
+                   title="Lascia vuoto per generare una costruzione casuale">
+          </label>
+        </div>
+        <div class="action-row">
+          <button type="submit"
+                  formaction="{{ url_for('download_all_shares') }}">
+            Costruisci tutte le share
+          </button>
+          <button class="secondary-button" type="submit">
+            Simula il trasferimento e ricostruisci
+          </button>
+        </div>
+      </form>
+      {% if error %}
+        <p class="error" role="alert">{{ error }}</p>
+      {% endif %}
+    </section>
+
+    {% if result %}
+    <section class="result-grid" aria-live="polite">
+      <article class="panel output-card">
+        <div>
+          <h2>Risultato</h2>
+        </div>
+        <div class="output-content">
+          <img src="{{ result.output }}" alt="Immagine di uscita ricostruita">
+          <div>
+            <p class="result-value">{{ result.visual }}</p>
+            <p class="status {{ 'ok' if result.matches else 'bad' }}">
+              {{ 'Coincide con il valore booleano' if result.matches else 'Discordanza probabilistica' }}
+            </p>
+            <dl>
+              <div><dt>Valore vero</dt><dd>{{ result.expected }}</dd></div>
+              <div><dt>Porte</dt><dd>{{ result.gate_count }}</dd></div>
+              <div><dt>Profondità</dt><dd>{{ result.depth }}</dd></div>
+            </dl>
+          </div>
+        </div>
+        <form class="download-form" method="post" action="{{ url_for('download_shares') }}">
+          <input type="hidden" name="expression" value="{{ result.expression }}">
+          <input type="hidden" name="assignment" value="{{ result.assignment_text }}">
+          <input type="hidden" name="side" value="{{ result.side }}">
+          <input type="hidden" name="seed"
+                 value="{{ '' if result.seed is none else result.seed }}">
+          <button type="submit">Scarica le share trasferite</button>
+          <p>Il kit contiene un’alternativa per ingresso e un PDF A4 ritagliabile.</p>
+        </form>
+      </article>
+
+      <article class="panel protocol-note">
+        <h2>Separazione del protocollo</h2>
+        <ol class="protocol-flow">
+          <li><strong>Costruzione:</strong> {{ result.alternative_count }} alternative
+            generate senza usare gli input.</li>
+          <li><strong>Distribuzione:</strong>
+            {{ result.alice_direct_count }} share di Alice consegnate direttamente;
+            {{ result.bob_ot_count }} share di Bob scelte mediante OT simulato.
+            {% if result.unassigned_count %}
+              {{ result.unassigned_count }} share con parte non assegnata sono
+              scelte localmente.
+            {% endif %}
+            Le alternative scartate non entrano nella ricostruzione.</li>
+          <li><strong>Ricostruzione:</strong> il pointer recuperato seleziona la metà
+            corretta a ogni porta.</li>
+        </ol>
+        <p>L’oblivious transfer fisico o di rete non è implementato.</p>
+      </article>
+    </section>
+
+    <section class="panel circuit-panel">
+      <div class="section-heading">
+        <div><h2>Circuito visuale</h2></div>
+        <p>Dalle share di ingresso, attraverso le porte, fino all’uscita.</p>
+      </div>
+      <div class="circuit-scroll" role="region" aria-label="Diagramma del circuito" tabindex="0">
+        <div class="circuit-stage">
+          <div class="circuit-output-marker">
+            <span>uscita finale</span>
+            <strong>{{ result.visual }}</strong>
+          </div>
+          <div class="circuit-tree">
+            <ul>
+              {{ render_circuit_node(result.circuit) }}
+            </ul>
+          </div>
+        </div>
+      </div>
+      <p class="circuit-legend">
+        Il flusso si legge dal basso verso l’alto: ogni riquadro di ingresso
+        contiene la share e, subito al suo fianco, il pointer in chiaro e le
+        eventuali share dei pointer interni.
+      </p>
+      <div class="circuit-actions">
+        <span id="download-circuit-status" class="circuit-download-status"
+              role="status" aria-live="polite"></span>
+        <button id="download-circuit" class="secondary-button" type="button">
+          Scarica l’immagine del circuito
+        </button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <div><h2>Share trasferite</h2></div>
+        <p>Una sola alternativa per ogni occorrenza di input.</p>
+      </div>
+      <div class="cards">
+        {% for share in result.shares %}
+        <article class="share-card">
+          <div class="share-title">
+            <h3>{{ share.variable }} = {{ share.value }}</h3>
+          </div>
+          <div class="share-with-pointer">
+            <div class="share-pane">
+              <span>share con blocchi pointer 1×2 anteposti</span>
+              <img src="{{ share.paper_image }}"
+                   alt="Share immagine di {{ share.variable }} con blocchi pointer">
+            </div>
+            <div class="pointer-pane pointer-zoom"
+                 aria-label="Ingrandimento dei blocchi pointer 1 per 2">
+              <em>ingrandimento</em>
+              {% if share.pointer_clear %}
+              <div class="pointer-group">
+                <span>pointer in chiaro = {{ share.pointer_clear|join }}</span>
+                {{ render_pointer_blocks(share.pointer_clear_blocks) }}
+              </div>
+              {% endif %}
+              {% if share.pointer_inner %}
+              <div class="pointer-group">
+                <span>share pointer interni</span>
+                {{ render_pointer_blocks(share.pointer_inner_blocks) }}
+              </div>
+              {% endif %}
+              {% if not share.pointer_clear and not share.pointer_inner %}
+                <span class="no-pointer">nessun pointer</span>
+              {% endif %}
+            </div>
+          </div>
+          <p>{{ share.role_label }} · {{ share.party_label }} · {{ share.delivery_label }}</p>
+        </article>
+        {% endfor %}
+      </div>
+      <p class="pointer-explanation">
+        Ogni pointer è un blocco 1×2 anteposto alla parte a cui appartiene. Sul filo destro ogni pointer precede immediatamente la propria metà.
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <div><h2>Ricostruzione porta per porta</h2></div>
+        <p>Il pointer sceglie una metà della share destra.</p>
+      </div>
+      <div class="steps">
+        {% for step in result.steps %}
+        <article>
+          <span>{{ step.output_name }}</span>
+          <img src="{{ step.image }}" alt="Uscita della porta {{ step.operation }}">
+          <div>
+            <h3>{{ step.operation }}</h3>
+            <p>{{ step.left_source }} + {{ step.right_source }} → {{ step.output_name }}</p>
+            <p>pointer {{ step.pointer }} · metà {{ step.selected_half_label }}</p>
+            <strong>letto {{ step.decoded_value }}</strong>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+  </main>
+</body>
+</html>
