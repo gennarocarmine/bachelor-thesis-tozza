@@ -113,11 +113,13 @@ def _printable_share_layout(
         clear_pixels = _clear_pointer_pixels(clear_bits)
         inner_pixels = np.asarray(inner_bits, dtype=np.uint8)
         if inner_pixels.size % 2:
-            raise ValueError("Le share dei pointer interni devono essere coppie 1×2.")
+            raise ValueError(
+                "Le share dei pointer delle porte superiori devono essere coppie 1×2."
+            )
         layout = compose(
             [
                 ("pointer in chiaro", clear_pixels, True),
-                ("share pointer interni", inner_pixels, True),
+                ("share pointer porte superiori", inner_pixels, True),
                 ("share", main, False),
             ]
         )

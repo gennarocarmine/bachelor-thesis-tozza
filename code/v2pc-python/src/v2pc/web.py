@@ -100,6 +100,16 @@ def _build_construction(payload: dict[str, Any]):
     side = int(payload.get("side", 32))
     raw_seed = payload.get("seed")
     seed = None if raw_seed is None or str(raw_seed).strip() == "" else int(raw_seed)
+    if seed is None:
+        stored_seed = str(payload.get("construction_seed", "")).strip()
+        stored_expression = str(payload.get("construction_expression", "")).strip()
+        stored_side = str(payload.get("construction_side", "")).strip()
+        if (
+            stored_seed
+            and stored_expression == expression
+            and stored_side == str(side)
+        ):
+            seed = int(stored_seed)
     if side > 64:
         raise ValueError("Nella demo web il lato massimo è 64.")
 
@@ -259,6 +269,9 @@ def create_app() -> Flask:
             ),
             side=32,
             seed=None,
+            construction_seed=None,
+            construction_expression="",
+            construction_side="",
             result=None,
             error=None,
         )
@@ -272,6 +285,9 @@ def create_app() -> Flask:
                 **result,
                 "assignment": result["assignment_text"],
                 "seed": form.get("seed", ""),
+                "construction_seed": result["seed"],
+                "construction_expression": result["expression"],
+                "construction_side": result["side"],
                 "input_variables": [
                     {"name": name, "value": result["assignment"][name]}
                     for name in result["variables"]
@@ -292,6 +308,9 @@ def create_app() -> Flask:
                     ),
                     side=form.get("side", 32),
                     seed=form.get("seed", ""),
+                    construction_seed=form.get("construction_seed", ""),
+                    construction_expression=form.get("construction_expression", ""),
+                    construction_side=form.get("construction_side", ""),
                     result=None,
                     error=str(exc),
                 ),
@@ -333,12 +352,14 @@ def create_app() -> Flask:
                 construction,
             ) = _build_construction(request.form.to_dict())
             archive = build_construction_kit(construction)
-            return send_file(
+            response = send_file(
                 archive,
                 mimetype="application/zip",
                 as_attachment=True,
                 download_name="v2pc-tutte-le-alternative.zip",
             )
+            response.headers["X-V2PC-Seed"] = str(construction.seed)
+            return response
         except (ValueError, MemoryError) as exc:
             return f"Impossibile creare tutte le share: {exc}\n", 400
 

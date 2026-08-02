@@ -6,6 +6,11 @@
   const assignment = document.querySelector("#assignment");
   const emptyMessage = document.querySelector("#variables-empty");
   const form = expression?.closest("form");
+  const constructionSeed = document.querySelector("#construction-seed");
+  const constructionExpression = document.querySelector("#construction-expression");
+  const constructionSide = document.querySelector("#construction-side");
+  const side = form?.querySelector('input[name="side"]');
+  const buildAllShares = document.querySelector("#build-all-shares");
 
   if (!expression || !controls || !assignment || !emptyMessage || !form) {
     return;
@@ -80,7 +85,51 @@
     updateTimer = window.setTimeout(renderVariables, 120);
   });
   controls.addEventListener("change", syncAssignment);
-  form.addEventListener("submit", syncAssignment);
+  async function downloadAllShares(event) {
+    event.preventDefault();
+    syncAssignment();
+    buildAllShares.disabled = true;
+    let archiveUrl;
+    try {
+      const response = await fetch(buildAllShares.formAction, {
+        method: "POST",
+        body: new FormData(form),
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()).trim() || "Download non riuscito.");
+      }
+
+      const effectiveSeed = response.headers.get("X-V2PC-Seed");
+      if (effectiveSeed && constructionSeed && constructionExpression && constructionSide) {
+        constructionSeed.value = effectiveSeed;
+        constructionExpression.value = expression.value.trim();
+        constructionSide.value = side?.value ?? "";
+      }
+
+      archiveUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = archiveUrl;
+      link.download = "v2pc-tutte-le-alternative.zip";
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Download non riuscito.");
+    } finally {
+      if (archiveUrl) {
+        window.setTimeout(() => URL.revokeObjectURL(archiveUrl), 1000);
+      }
+      buildAllShares.disabled = false;
+    }
+  }
+
+  form.addEventListener("submit", (event) => {
+    syncAssignment();
+    if (event.submitter === buildAllShares) {
+      downloadAllShares(event);
+    }
+  });
   syncAssignment();
 
   function fitCircuit() {

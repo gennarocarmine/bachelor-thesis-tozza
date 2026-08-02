@@ -123,6 +123,12 @@
           </p>
           <input id="assignment" type="hidden" name="assignment"
                  value="{{ assignment }}">
+          <input id="construction-seed" type="hidden" name="construction_seed"
+                 value="{{ '' if construction_seed is none else construction_seed }}">
+          <input id="construction-expression" type="hidden"
+                 name="construction_expression" value="{{ construction_expression }}">
+          <input id="construction-side" type="hidden" name="construction_side"
+                 value="{{ construction_side }}">
         </div>
 
         <div class="form-row">
@@ -139,7 +145,7 @@
           </label>
         </div>
         <div class="action-row">
-          <button type="submit"
+          <button id="build-all-shares" type="submit"
                   formaction="{{ url_for('download_all_shares') }}">
             Costruisci tutte le share
           </button>
@@ -225,7 +231,7 @@
       <p class="circuit-legend">
         Il flusso si legge dal basso verso l’alto: ogni riquadro di ingresso
         contiene la share e, subito al suo fianco, il pointer in chiaro e le
-        eventuali share dei pointer interni.
+        eventuali share dei pointer associati alle porte superiori.
       </p>
       <div class="circuit-actions">
         <span id="download-circuit-status" class="circuit-download-status"
@@ -264,7 +270,7 @@
               {% endif %}
               {% if share.pointer_inner %}
               <div class="pointer-group">
-                <span>share pointer interni</span>
+                <span>share dei pointer delle porte superiori</span>
                 {{ render_pointer_blocks(share.pointer_inner_blocks) }}
               </div>
               {% endif %}
