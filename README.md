@@ -226,7 +226,7 @@ CLI e demo web utilizzano lo stesso nucleo del protocollo.
 ## Documenti
 
 La tesi completa, in italiano, è disponibile in
-[`docs/main.pdf`](docs/main.pdf).
+[`docs/thesis-tozza.pdf`](docs/thesis-tozza.pdf).
 
 ---
 
@@ -428,4 +428,4 @@ The CLI and web demo use the same protocol core.
 ## Documents
 
 The full thesis, written in Italian, is available at
-[`docs/main.pdf`](docs/main.pdf).
+[`docs/thesis-tozza.pdf`](docs/thesis-tozza.pdf).
