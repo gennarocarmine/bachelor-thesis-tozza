@@ -11,11 +11,13 @@ from .artifacts import (
     save_construction,
     save_transfer,
 )
-from .circuit import Circuit, parse_expression
+from .circuit import parse_expression
 from .protocol import (
     DELIVERY_DIRECT,
     DELIVERY_SIMULATED_OT,
     build,
+    delivery_for_party,
+    distribution_label,
     evaluate,
     reconstruct,
     select_shares,
@@ -26,7 +28,6 @@ from .render import (
     export_reconstruction,
     export_transferred_shares,
     pointer_parts,
-    transferred_pointer_parts,
 )
 
 
@@ -46,42 +47,31 @@ def parse_assignment(text: str) -> dict[str, int]:
     return assignment
 
 
+def _pointer_texts(role: str, pointer_value) -> tuple[str, str]:
+    clear, inner = pointer_parts(role, pointer_value)
+    return "".join(map(str, clear)) or "-", "".join(map(str, inner)) or "-"
+
+
 def _print_selected_shares(construction, assignment: dict[str, int]) -> None:
     print("Share selezionate (blocchi pointer 1x2 anteposti):")
     for leaf in construction.leaves:
         value = int(assignment[leaf.variable])
-        clear, inner = pointer_parts(leaf, value)
-        clear_text = "".join(map(str, clear)) or "-"
-        inner_text = "".join(map(str, inner)) or "-"
+        clear, inner = _pointer_texts(leaf.role, leaf.pointer_values[value])
         print(
             f"  S{leaf.occurrence + 1:02d} {leaf.variable}={value} "
-            f"[{_delivery_label(leaf.party)}; "
-            f"p={clear_text}; p_interni={inner_text}]"
+            f"[{distribution_label(leaf.party, delivery_for_party(leaf.party))}; "
+            f"p={clear}; p_interni={inner}]"
         )
-
-
-def _delivery_label(party_or_delivery: str) -> str:
-    labels = {
-        "alice": "Alice · consegna diretta",
-        "bob": "Bob · OT simulato",
-        "unassigned": "parte non assegnata · selezione locale",
-        DELIVERY_DIRECT: "Alice · consegna diretta",
-        DELIVERY_SIMULATED_OT: "Bob · OT simulato",
-        "simulated_selection": "parte non assegnata · selezione locale",
-    }
-    return labels.get(party_or_delivery, party_or_delivery)
 
 
 def _print_transferred_shares(transfer) -> None:
     print("Share ricevute (blocchi pointer 1x2 anteposti):")
     for leaf in transfer.leaves:
-        clear, inner = transferred_pointer_parts(leaf)
-        clear_text = "".join(map(str, clear)) or "-"
-        inner_text = "".join(map(str, inner)) or "-"
+        clear, inner = _pointer_texts(leaf.role, leaf.pointer_value)
         print(
             f"  S{leaf.occurrence + 1:02d} {leaf.variable} "
-            f"[{_delivery_label(leaf.delivery)}; "
-            f"p={clear_text}; p_interni={inner_text}]"
+            f"[{distribution_label(leaf.party, leaf.delivery)}; "
+            f"p={clear}; p_interni={inner}]"
         )
 
 

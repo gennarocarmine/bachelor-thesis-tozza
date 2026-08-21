@@ -9,14 +9,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .protocol import (
-    Construction,
-    Evaluation,
-    LeafMaterial,
-    Transfer,
-    TransferredLeafMaterial,
-)
-from .visual import BinaryImage, read_pointer
+from .protocol import Construction, Evaluation, Transfer
+from .visual import BinaryImage, pointer_block, read_pointer
 
 
 @dataclass(frozen=True)
@@ -26,6 +20,15 @@ class PrintableSegment:
     label: str
     start: int
     width: int
+
+
+@dataclass(frozen=True)
+class ShareLayout:
+    """Share componibile per la stampa; `split_at` è il taglio fra le due metà."""
+
+    pixels: BinaryImage
+    segments: tuple[PrintableSegment, ...]
+    split_at: int | None = None
 
 
 def image_to_pil(image: np.ndarray, *, scale: int = 8) -> Image.Image:
@@ -50,10 +53,11 @@ def image_png_bytes(image: np.ndarray, *, scale: int = 8) -> bytes:
     return stream.getvalue()
 
 
-def _pointer_parts(
+def pointer_parts(
     role: str,
     pointer_value: BinaryImage,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Separa il pointer in chiaro dalle share dei pointer delle porte superiori."""
     selected = tuple(int(bit) for bit in pointer_value.tolist())
     if role == "left" and len(selected) >= 2:
         clear = read_pointer(np.asarray(selected[:2], dtype=np.uint8))
@@ -61,33 +65,16 @@ def _pointer_parts(
     return (), selected
 
 
-def pointer_parts(leaf: LeafMaterial, value: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    return _pointer_parts(leaf.role, leaf.pointer_values[value])
-
-
-def transferred_pointer_parts(
-    leaf: TransferredLeafMaterial,
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Separa i pointer di una share già selezionata."""
-    return _pointer_parts(leaf.role, leaf.pointer_value)
-
-
-def _clear_pointer_pixels(bits: tuple[int, ...]) -> BinaryImage:
-    pixels: list[int] = []
-    for bit in bits:
-        pixels.extend((1, bit))
-    return np.asarray(pixels, dtype=np.uint8)
-
-
-def _printable_share_layout(
+def share_layout(
     main: BinaryImage,
     role: str,
-    clear_bits: tuple[int, ...],
-    inner_bits: tuple[int, ...],
-) -> tuple[BinaryImage, tuple[PrintableSegment, ...]]:
+    pointer_value: BinaryImage,
+) -> ShareLayout:
+    """Compone una share e i suoi pointer mantenendo la geometria del paper."""
     main = np.asarray(main, dtype=np.uint8)
     if main.ndim != 2:
         raise ValueError("La share principale deve essere bidimensionale.")
+    clear_bits, inner_bits = pointer_parts(role, pointer_value)
 
     segments: list[PrintableSegment] = []
 
@@ -110,20 +97,24 @@ def _printable_share_layout(
         return canvas
 
     if role == "left":
-        clear_pixels = _clear_pointer_pixels(clear_bits)
+        clear_pixels = (
+            np.concatenate([pointer_block(bit) for bit in clear_bits])
+            if clear_bits
+            else np.zeros(0, dtype=np.uint8)
+        )
         inner_pixels = np.asarray(inner_bits, dtype=np.uint8)
         if inner_pixels.size % 2:
             raise ValueError(
                 "Le share dei pointer delle porte superiori devono essere coppie 1×2."
             )
-        layout = compose(
+        pixels = compose(
             [
                 ("pointer in chiaro", clear_pixels, True),
                 ("share pointer porte superiori", inner_pixels, True),
                 ("share", main, False),
             ]
         )
-        return layout, tuple(segments)
+        return ShareLayout(pixels, tuple(segments))
 
     if role == "right" and inner_bits:
         inner_pixels = np.asarray(inner_bits, dtype=np.uint8)
@@ -131,7 +122,7 @@ def _printable_share_layout(
             raise ValueError("Share destra e pointer non sono divisibili in due metà.")
         pointer_half = inner_pixels.size // 2
         image_half = main.shape[1] // 2
-        layout = compose(
+        pixels = compose(
             [
                 ("pointer metà sinistra", inner_pixels[:pointer_half], True),
                 ("share metà sinistra", main[:, :image_half], False),
@@ -139,51 +130,19 @@ def _printable_share_layout(
                 ("share metà destra", main[:, image_half:], False),
             ]
         )
-        return layout, tuple(segments)
+        return ShareLayout(pixels, tuple(segments), split_at=pointer_half + image_half)
 
-    return main.copy(), (PrintableSegment("share", 0, main.shape[1]),)
-
-
-def printable_share_layout(
-    leaf: LeafMaterial,
-    value: int,
-) -> tuple[BinaryImage, tuple[PrintableSegment, ...]]:
-    """Compone un'alternativa e i pointer mantenendo la geometria del paper."""
-    clear_bits, inner_bits = pointer_parts(leaf, value)
-    return _printable_share_layout(
-        leaf.images[value],
-        leaf.role,
-        clear_bits,
-        inner_bits,
-    )
+    return ShareLayout(main.copy(), (PrintableSegment("share", 0, main.shape[1]),))
 
 
-def printable_transferred_share_layout(
-    leaf: TransferredLeafMaterial,
-) -> tuple[BinaryImage, tuple[PrintableSegment, ...]]:
-    """Compone una share distribuita e i suoi pointer."""
-    clear_bits, inner_bits = transferred_pointer_parts(leaf)
-    return _printable_share_layout(
-        leaf.image,
-        leaf.role,
-        clear_bits,
-        inner_bits,
-    )
-
-
-def printable_layout_to_pil(
-    layout: BinaryImage,
-    segments: tuple[PrintableSegment, ...],
-    *,
-    scale: int = 8,
-) -> Image.Image:
-    image = image_to_pil(layout, scale=scale).convert("RGB")
+def layout_to_pil(layout: ShareLayout, *, scale: int = 8) -> Image.Image:
+    image = image_to_pil(layout.pixels, scale=scale).convert("RGB")
     draw = ImageDraw.Draw(image)
-    height = layout.shape[0]
+    height = layout.pixels.shape[0]
     line_width = max(1, scale // 20)
     grid_color = (80, 80, 80)
 
-    for segment in segments:
+    for segment in layout.segments:
         start = segment.start * scale
         end = (segment.start + segment.width) * scale
         is_pointer = "pointer" in segment.label
@@ -207,29 +166,23 @@ def printable_layout_to_pil(
     return image
 
 
-def printable_share_to_pil(
-    leaf: LeafMaterial,
-    value: int,
+def share_to_pil(
+    main: BinaryImage,
+    role: str,
+    pointer_value: BinaryImage,
     *,
     scale: int = 8,
 ) -> Image.Image:
     """Esporta la share con i blocchi pointer 1×2 anteposti."""
-    if scale < 1 or scale > 64:
-        raise ValueError("La scala deve essere compresa tra 1 e 64.")
-    layout, segments = printable_share_layout(leaf, value)
-    return printable_layout_to_pil(layout, segments, scale=scale)
+    return layout_to_pil(share_layout(main, role, pointer_value), scale=scale)
 
 
-def printable_transferred_share_to_pil(
-    leaf: TransferredLeafMaterial,
-    *,
-    scale: int = 8,
-) -> Image.Image:
-    """Esporta una share distribuita con i blocchi pointer anteposti."""
-    if scale < 1 or scale > 64:
-        raise ValueError("La scala deve essere compresa tra 1 e 64.")
-    layout, segments = printable_transferred_share_layout(leaf)
-    return printable_layout_to_pil(layout, segments, scale=scale)
+def _export_steps(evaluation: Evaluation, folder: Path, scale: int) -> None:
+    image_to_pil(evaluation.output_image, scale=scale).save(folder / "output.png")
+    for step in evaluation.steps:
+        image_to_pil(step.image, scale=scale).save(
+            folder / f"step_{step.index:02d}_{step.operation.lower()}.png"
+        )
 
 
 def export_leaf_alternatives(
@@ -241,34 +194,12 @@ def export_leaf_alternatives(
     folder = Path(destination)
     folder.mkdir(parents=True, exist_ok=True)
     for leaf in construction.leaves:
-        label = f"{leaf.occurrence:02d}_{leaf.variable}"
         for value in (0, 1):
-            printable_share_to_pil(leaf, value, scale=scale).save(
-                folder / f"{label}_value_{value}_share.png"
+            share_to_pil(
+                leaf.images[value], leaf.role, leaf.pointer_values[value], scale=scale
+            ).save(
+                folder / f"{leaf.occurrence:02d}_{leaf.variable}_value_{value}_share.png"
             )
-
-
-def export_evaluation(
-    construction: Construction,
-    evaluation: Evaluation,
-    assignment: dict[str, int],
-    destination: str | Path,
-    *,
-    scale: int = 8,
-) -> None:
-    folder = Path(destination)
-    folder.mkdir(parents=True, exist_ok=True)
-    for leaf in construction.leaves:
-        value = int(assignment[leaf.variable])
-        label = f"{leaf.occurrence:02d}_{leaf.variable}_{value}"
-        printable_share_to_pil(leaf, value, scale=scale).save(
-            folder / f"{label}_share.png"
-        )
-    image_to_pil(evaluation.output_image, scale=scale).save(folder / "output.png")
-    for step in evaluation.steps:
-        image_to_pil(step.image, scale=scale).save(
-            folder / f"step_{step.index:02d}_{step.operation.lower()}.png"
-        )
 
 
 def export_transferred_shares(
@@ -281,9 +212,8 @@ def export_transferred_shares(
     folder = Path(destination)
     folder.mkdir(parents=True, exist_ok=True)
     for leaf in transfer.leaves:
-        label = f"{leaf.occurrence:02d}_{leaf.variable}"
-        printable_transferred_share_to_pil(leaf, scale=scale).save(
-            folder / f"{label}_share.png"
+        share_to_pil(leaf.image, leaf.role, leaf.pointer_value, scale=scale).save(
+            folder / f"{leaf.occurrence:02d}_{leaf.variable}_share.png"
         )
 
 
@@ -297,8 +227,4 @@ def export_reconstruction(
     """Esporta le share ricevute, i passaggi e l'uscita ricostruita."""
     folder = Path(destination)
     export_transferred_shares(transfer, folder, scale=scale)
-    image_to_pil(evaluation.output_image, scale=scale).save(folder / "output.png")
-    for step in evaluation.steps:
-        image_to_pil(step.image, scale=scale).save(
-            folder / f"step_{step.index:02d}_{step.operation.lower()}.png"
-        )
+    _export_steps(evaluation, folder, scale)

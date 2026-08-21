@@ -4,57 +4,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-from .circuit import parse_expression
+from .circuit import Circuit, parse_expression
 from .protocol import (
     Construction,
     LeafMaterial,
     Transfer,
     TransferredLeafMaterial,
-    delivery_for_party,
-    input_party,
 )
 
 FORMAT_VERSION = 3
-SUPPORTED_FORMAT_VERSIONS = {2, FORMAT_VERSION}
 
 
-def save_construction(construction: Construction, destination: str | Path) -> Path:
+def _write(
+    destination: str | Path,
+    arrays_name: str,
+    arrays: dict[str, np.ndarray],
+    manifest: dict[str, Any],
+) -> Path:
     folder = Path(destination)
     folder.mkdir(parents=True, exist_ok=True)
-
-    arrays: dict[str, np.ndarray] = {}
-    leaves: list[dict[str, object]] = []
-    for leaf in construction.leaves:
-        prefix = f"leaf_{leaf.occurrence:04d}"
-        arrays[f"{prefix}_image_0"] = leaf.images[0]
-        arrays[f"{prefix}_image_1"] = leaf.images[1]
-        arrays[f"{prefix}_pointer_0"] = leaf.pointer_values[0]
-        arrays[f"{prefix}_pointer_1"] = leaf.pointer_values[1]
-        leaves.append(
-            {
-                "occurrence": leaf.occurrence,
-                "variable": leaf.variable,
-                "role": leaf.role,
-                "party": leaf.party,
-                "prefix": prefix,
-            }
-        )
-
-    np.savez_compressed(folder / "shares.npz", **arrays)
-    manifest = {
-        "format": "v2pc-construction",
-        "version": FORMAT_VERSION,
-        "expression": construction.circuit.expression,
-        "side": construction.side,
-        "seed": construction.seed,
-        "gate_count": construction.circuit.gate_count,
-        "depth": construction.circuit.depth,
-        "leaves": leaves,
-        "permutation_bits": list(construction.permutation_bits),
-    }
+    np.savez_compressed(folder / arrays_name, **arrays)
     (folder / "manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -62,52 +35,101 @@ def save_construction(construction: Construction, destination: str | Path) -> Pa
     return folder
 
 
-def load_construction(source: str | Path) -> Construction:
+def _read(
+    source: str | Path,
+    arrays_name: str,
+    expected_format: str,
+) -> tuple[dict[str, Any], Circuit, list[dict[str, Any]], dict[str, np.ndarray]]:
     folder = Path(source)
     manifest_path = folder / "manifest.json"
-    arrays_path = folder / "shares.npz"
+    arrays_path = folder / arrays_name
     if not manifest_path.is_file() or not arrays_path.is_file():
-        raise ValueError("La cartella non contiene manifest.json e shares.npz.")
+        raise ValueError(f"La cartella non contiene manifest.json e {arrays_name}.")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != "v2pc-construction":
-        raise ValueError("Formato della costruzione non riconosciuto.")
-    if manifest.get("version") not in SUPPORTED_FORMAT_VERSIONS:
-        raise ValueError("Versione della costruzione non supportata.")
+    if manifest.get("format") != expected_format:
+        raise ValueError("Formato del pacchetto non riconosciuto.")
+    if manifest.get("version") != FORMAT_VERSION:
+        raise ValueError("Versione del pacchetto non supportata.")
 
-    circuit = parse_expression(str(manifest["expression"]))
     raw_leaves = manifest.get("leaves")
-    if not isinstance(raw_leaves, list):
+    if not isinstance(raw_leaves, list) or not all(
+        isinstance(raw, dict) for raw in raw_leaves
+    ):
         raise ValueError("Elenco delle share non valido.")
 
-    leaves: list[LeafMaterial] = []
-    with np.load(arrays_path, allow_pickle=False) as arrays:
-        for raw in raw_leaves:
-            if not isinstance(raw, dict):
-                raise ValueError("Voce di share non valida.")
-            prefix = str(raw["prefix"])
-            leaves.append(
-                LeafMaterial(
-                    occurrence=int(raw["occurrence"]),
-                    variable=str(raw["variable"]),
-                    role=str(raw["role"]),
-                    party=str(
-                        raw.get("party", input_party(str(raw["variable"])))
-                    ),
-                    images=(
-                        arrays[f"{prefix}_image_0"].astype(np.uint8),
-                        arrays[f"{prefix}_image_1"].astype(np.uint8),
-                    ),
-                    pointer_values=(
-                        arrays[f"{prefix}_pointer_0"].astype(np.uint8),
-                        arrays[f"{prefix}_pointer_1"].astype(np.uint8),
-                    ),
-                )
-            )
+    with np.load(arrays_path, allow_pickle=False) as loaded:
+        arrays = {name: loaded[name].astype(np.uint8) for name in loaded.files}
+    return manifest, parse_expression(str(manifest["expression"])), raw_leaves, arrays
 
+
+def _check_leaves(leaves: list, circuit: Circuit) -> None:
     if tuple(leaf.variable for leaf in leaves) != circuit.leaf_names:
         raise ValueError("Le share salvate non corrispondono alle foglie del circuito.")
 
+
+def _leaf_entry(leaf, prefix: str, *extra: str) -> dict[str, Any]:
+    entry = {
+        "occurrence": leaf.occurrence,
+        "variable": leaf.variable,
+        "role": leaf.role,
+        "party": leaf.party,
+        "prefix": prefix,
+    }
+    entry.update({name: getattr(leaf, name) for name in extra})
+    return entry
+
+
+def save_construction(construction: Construction, destination: str | Path) -> Path:
+    arrays: dict[str, np.ndarray] = {}
+    leaves: list[dict[str, Any]] = []
+    for leaf in construction.leaves:
+        prefix = f"leaf_{leaf.occurrence:04d}"
+        for value in (0, 1):
+            arrays[f"{prefix}_image_{value}"] = leaf.images[value]
+            arrays[f"{prefix}_pointer_{value}"] = leaf.pointer_values[value]
+        leaves.append(_leaf_entry(leaf, prefix))
+
+    return _write(
+        destination,
+        "shares.npz",
+        arrays,
+        {
+            "format": "v2pc-construction",
+            "version": FORMAT_VERSION,
+            "expression": construction.circuit.expression,
+            "side": construction.side,
+            "seed": construction.seed,
+            "gate_count": construction.circuit.gate_count,
+            "depth": construction.circuit.depth,
+            "leaves": leaves,
+            "permutation_bits": list(construction.permutation_bits),
+        },
+    )
+
+
+def load_construction(source: str | Path) -> Construction:
+    manifest, circuit, raw_leaves, arrays = _read(
+        source, "shares.npz", "v2pc-construction"
+    )
+    leaves = [
+        LeafMaterial(
+            occurrence=int(raw["occurrence"]),
+            variable=str(raw["variable"]),
+            role=str(raw["role"]),
+            party=str(raw["party"]),
+            images=(
+                arrays[f"{raw['prefix']}_image_0"],
+                arrays[f"{raw['prefix']}_image_1"],
+            ),
+            pointer_values=(
+                arrays[f"{raw['prefix']}_pointer_0"],
+                arrays[f"{raw['prefix']}_pointer_1"],
+            ),
+        )
+        for raw in raw_leaves
+    ]
+    _check_leaves(leaves, circuit)
     return Construction(
         circuit=circuit,
         side=int(manifest["side"]),
@@ -125,87 +147,49 @@ def save_transfer(transfer: Transfer, destination: str | Path) -> Path:
             "La destinazione del trasferimento deve essere nuova o vuota, "
             "per evitare di conservare alternative precedenti."
         )
-    folder.mkdir(parents=True, exist_ok=True)
 
     arrays: dict[str, np.ndarray] = {}
-    leaves: list[dict[str, object]] = []
+    leaves: list[dict[str, Any]] = []
     for leaf in transfer.leaves:
         prefix = f"leaf_{leaf.occurrence:04d}"
         arrays[f"{prefix}_image"] = leaf.image
         arrays[f"{prefix}_pointer"] = leaf.pointer_value
-        leaves.append(
-            {
-                "occurrence": leaf.occurrence,
-                "variable": leaf.variable,
-                "role": leaf.role,
-                "party": leaf.party,
-                "delivery": leaf.delivery,
-                "prefix": prefix,
-            }
-        )
+        leaves.append(_leaf_entry(leaf, prefix, "delivery"))
 
-    np.savez_compressed(folder / "selected-shares.npz", **arrays)
-    manifest = {
-        "format": "v2pc-transfer",
-        "version": FORMAT_VERSION,
-        "expression": transfer.circuit.expression,
-        "side": transfer.side,
-        "gate_count": transfer.circuit.gate_count,
-        "depth": transfer.circuit.depth,
-        "leaves": leaves,
-    }
-    (folder / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    return _write(
+        destination,
+        "selected-shares.npz",
+        arrays,
+        {
+            "format": "v2pc-transfer",
+            "version": FORMAT_VERSION,
+            "expression": transfer.circuit.expression,
+            "side": transfer.side,
+            "gate_count": transfer.circuit.gate_count,
+            "depth": transfer.circuit.depth,
+            "leaves": leaves,
+        },
     )
-    return folder
 
 
 def load_transfer(source: str | Path) -> Transfer:
     """Carica un pacchetto che non contiene le alternative scartate."""
-    folder = Path(source)
-    manifest_path = folder / "manifest.json"
-    arrays_path = folder / "selected-shares.npz"
-    if not manifest_path.is_file() or not arrays_path.is_file():
-        raise ValueError(
-            "La cartella non contiene manifest.json e selected-shares.npz."
+    manifest, circuit, raw_leaves, arrays = _read(
+        source, "selected-shares.npz", "v2pc-transfer"
+    )
+    leaves = [
+        TransferredLeafMaterial(
+            occurrence=int(raw["occurrence"]),
+            variable=str(raw["variable"]),
+            role=str(raw["role"]),
+            party=str(raw["party"]),
+            delivery=str(raw["delivery"]),
+            image=arrays[f"{raw['prefix']}_image"],
+            pointer_value=arrays[f"{raw['prefix']}_pointer"],
         )
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != "v2pc-transfer":
-        raise ValueError("Il pacchetto non contiene share trasferite.")
-    if manifest.get("version") not in SUPPORTED_FORMAT_VERSIONS:
-        raise ValueError("Versione del trasferimento non supportata.")
-
-    circuit = parse_expression(str(manifest["expression"]))
-    raw_leaves = manifest.get("leaves")
-    if not isinstance(raw_leaves, list):
-        raise ValueError("Elenco delle share trasferite non valido.")
-
-    leaves: list[TransferredLeafMaterial] = []
-    with np.load(arrays_path, allow_pickle=False) as arrays:
-        for raw in raw_leaves:
-            if not isinstance(raw, dict):
-                raise ValueError("Voce di share trasferita non valida.")
-            prefix = str(raw["prefix"])
-            party = str(raw.get("party", input_party(str(raw["variable"]))))
-            leaves.append(
-                TransferredLeafMaterial(
-                    occurrence=int(raw["occurrence"]),
-                    variable=str(raw["variable"]),
-                    role=str(raw["role"]),
-                    party=party,
-                    delivery=str(
-                        raw.get("delivery", delivery_for_party(party))
-                    ),
-                    image=arrays[f"{prefix}_image"].astype(np.uint8),
-                    pointer_value=arrays[f"{prefix}_pointer"].astype(np.uint8),
-                )
-            )
-
-    if tuple(leaf.variable for leaf in leaves) != circuit.leaf_names:
-        raise ValueError("Le share trasferite non corrispondono alle foglie del circuito.")
-
+        for raw in raw_leaves
+    ]
+    _check_leaves(leaves, circuit)
     return Transfer(
         circuit=circuit,
         side=int(manifest["side"]),

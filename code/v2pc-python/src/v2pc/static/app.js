@@ -211,31 +211,10 @@
   }
 
   function roundedRectangle(context, rect, radii = 0) {
-    const raw = Array.isArray(radii) ? radii : [radii, radii, radii, radii];
-    const [topLeft, topRight, bottomRight, bottomLeft] = raw.map((radius) =>
-      Math.max(0, Math.min(radius, rect.width / 2, rect.height / 2))
-    );
-
+    // ponytail: CanvasRenderingContext2D.roundRect limita da se' i raggi a meta'
+    // lato; sostituisce il tracciato manuale con quadraticCurveTo.
     context.beginPath();
-    context.moveTo(rect.x + topLeft, rect.y);
-    context.lineTo(rect.right - topRight, rect.y);
-    context.quadraticCurveTo(rect.right, rect.y, rect.right, rect.y + topRight);
-    context.lineTo(rect.right, rect.bottom - bottomRight);
-    context.quadraticCurveTo(
-      rect.right,
-      rect.bottom,
-      rect.right - bottomRight,
-      rect.bottom
-    );
-    context.lineTo(rect.x + bottomLeft, rect.bottom);
-    context.quadraticCurveTo(
-      rect.x,
-      rect.bottom,
-      rect.x,
-      rect.bottom - bottomLeft
-    );
-    context.lineTo(rect.x, rect.y + topLeft);
-    context.quadraticCurveTo(rect.x, rect.y, rect.x + topLeft, rect.y);
+    context.roundRect(rect.x, rect.y, rect.width, rect.height, radii);
     context.closePath();
   }
 

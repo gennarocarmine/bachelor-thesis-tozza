@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterator
 
 import numpy as np
 
-from .circuit import Circuit, Gate, Input, Node, Not, validate_assignment
+from .circuit import Circuit, Input, Node, Not, validate_assignment
 from .gate import build_gate
 from .visual import (
     BinaryImage,
@@ -25,6 +25,21 @@ PARTY_UNASSIGNED = "unassigned"
 DELIVERY_DIRECT = "direct"
 DELIVERY_SIMULATED_OT = "simulated_ot"
 DELIVERY_SIMULATED_SELECTION = "simulated_selection"
+
+PARTY_LABELS = {
+    PARTY_ALICE: "Alice",
+    PARTY_BOB: "Bob",
+    PARTY_UNASSIGNED: "parte non assegnata",
+}
+DELIVERY_LABELS = {
+    DELIVERY_DIRECT: "consegna diretta",
+    DELIVERY_SIMULATED_OT: "OT simulato",
+    DELIVERY_SIMULATED_SELECTION: "selezione locale",
+}
+
+
+def distribution_label(party: str, delivery: str) -> str:
+    return f"{PARTY_LABELS[party]} · {DELIVERY_LABELS[delivery]}"
 
 
 def input_party(variable: str) -> str:
@@ -330,16 +345,11 @@ def reconstruct(transfer: Transfer) -> Evaluation:
         )
 
     output = ascend(transfer.circuit.root)
-    try:
-        next(materials)
-    except StopIteration:
-        pass
-    else:
+    if next(materials, None) is not None:
         raise ValueError("Costruzione non valida: sono presenti share in eccesso.")
 
-    value = read_value(output.image)
     return Evaluation(
-        value=value,
+        value=read_value(output.image),
         expected=None,
         output_image=output.image,
         steps=tuple(steps),
@@ -348,11 +358,5 @@ def reconstruct(transfer: Transfer) -> Evaluation:
 
 def evaluate(construction: Construction, assignment: dict[str, int]) -> Evaluation:
     """Scorciatoia locale: seleziona le share e ne esegue la ricostruzione."""
-    transfer = select_shares(construction, assignment)
-    reconstructed = reconstruct(transfer)
-    return Evaluation(
-        value=reconstructed.value,
-        expected=construction.circuit.evaluate(assignment),
-        output_image=reconstructed.output_image,
-        steps=reconstructed.steps,
-    )
+    reconstructed = reconstruct(select_shares(construction, assignment))
+    return replace(reconstructed, expected=construction.circuit.evaluate(assignment))

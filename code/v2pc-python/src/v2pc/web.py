@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 from io import BytesIO
 from typing import Any
 
@@ -13,17 +14,24 @@ from .cli import parse_assignment
 from .printkit import build_construction_kit, build_print_kit
 from .protocol import (
     DELIVERY_DIRECT,
+    DELIVERY_LABELS,
     DELIVERY_SIMULATED_OT,
+    PARTY_LABELS,
+    Construction,
     Evaluation,
+    Transfer,
     build,
     reconstruct,
     select_shares,
 )
-from .render import (
-    image_png_bytes,
-    printable_transferred_share_to_pil,
-    transferred_pointer_parts,
-)
+from .render import image_png_bytes, pointer_parts, share_to_pil
+from .visual import pointer_blocks
+
+ROLE_LABELS = {
+    "left": "filo sinistro",
+    "right": "filo destro",
+    "output": "filo di uscita",
+}
 
 DEFAULT_EXPRESSION = "(x1|y1) & ((x2&y2) & (x3|y3))"
 DEFAULT_ASSIGNMENT = "x1=0,y1=1,x2=1,y2=1,x3=1,y3=0"
@@ -37,12 +45,6 @@ def _pil_data_url(image) -> str:
     stream = BytesIO()
     image.save(stream, format="PNG")
     return _data_url(stream.getvalue())
-
-
-def _pointer_blocks(bits: tuple[int, ...]) -> list[tuple[int, int]]:
-    if len(bits) % 2:
-        raise ValueError("Una share di pointer deve contenere coppie di sotto-pixel.")
-    return [tuple(bits[index : index + 2]) for index in range(0, len(bits), 2)]
 
 
 def _form_variables(expression: str, assignment_text: str) -> list[dict[str, Any]]:
@@ -95,38 +97,34 @@ def _circuit_diagram(
     return visit(root)
 
 
-def _build_construction(payload: dict[str, Any]):
+def _build_construction(payload: dict[str, Any]) -> Construction:
     expression = str(payload.get("expression", DEFAULT_EXPRESSION)).strip()
     side = int(payload.get("side", 32))
     raw_seed = payload.get("seed")
     seed = None if raw_seed is None or str(raw_seed).strip() == "" else int(raw_seed)
     if seed is None:
         stored_seed = str(payload.get("construction_seed", "")).strip()
-        stored_expression = str(payload.get("construction_expression", "")).strip()
-        stored_side = str(payload.get("construction_side", "")).strip()
         if (
             stored_seed
-            and stored_expression == expression
-            and stored_side == str(side)
+            and str(payload.get("construction_expression", "")).strip() == expression
+            and str(payload.get("construction_side", "")).strip() == str(side)
         ):
             seed = int(stored_seed)
-    if side > 64:
-        raise ValueError("Nella demo web il lato massimo è 64.")
+    # ponytail: sotto 16 la lettura "tutto nero = 1" da' falsi 1 per costruzione
+    # (misurato ~11% a side=8 sulla formula predefinita), non per un difetto.
+    if not 16 <= side <= 64:
+        raise ValueError("Nella demo web il lato deve essere compreso tra 16 e 64.")
 
     circuit = parse_expression(expression)
     if circuit.gate_count > 12:
         raise ValueError("Nella demo web sono ammesse al massimo 12 porte.")
-    construction = build(
-        circuit,
-        side=side,
-        seed=seed,
-        max_total_pixels=12_000_000,
-    )
-    return expression, side, construction.seed, circuit, construction
+    return build(circuit, side=side, seed=seed, max_total_pixels=12_000_000)
 
 
-def _evaluate_payload(payload: dict[str, Any]):
-    expression, side, seed, circuit, construction = _build_construction(payload)
+def _evaluate_payload(
+    payload: dict[str, Any],
+) -> tuple[Construction, dict[str, int], str, Transfer, Evaluation]:
+    construction = _build_construction(payload)
     raw_assignment = payload.get("assignment", DEFAULT_ASSIGNMENT)
     if isinstance(raw_assignment, dict):
         assignment = {str(name): int(value) for name, value in raw_assignment.items()}
@@ -135,73 +133,39 @@ def _evaluate_payload(payload: dict[str, Any]):
         assignment_text = str(raw_assignment).strip()
         assignment = parse_assignment(assignment_text)
     transfer = select_shares(construction, assignment)
-    reconstructed = reconstruct(transfer)
-    result = Evaluation(
-        value=reconstructed.value,
-        expected=circuit.evaluate(assignment),
-        output_image=reconstructed.output_image,
-        steps=reconstructed.steps,
+    result = replace(
+        reconstruct(transfer),
+        expected=construction.circuit.evaluate(assignment),
     )
-    return (
-        expression,
-        assignment,
-        assignment_text,
-        side,
-        seed,
-        circuit,
-        construction,
-        transfer,
-        result,
-    )
+    return construction, assignment, assignment_text, transfer, result
 
 
 def _run(payload: dict[str, Any]) -> dict[str, Any]:
-    (
-        expression,
-        assignment,
-        assignment_text,
-        side,
-        seed,
-        circuit,
-        construction,
-        transfer,
-        result,
-    ) = _evaluate_payload(payload)
+    construction, assignment, assignment_text, transfer, result = _evaluate_payload(
+        payload
+    )
+    circuit = construction.circuit
 
     selected = []
     for leaf in transfer.leaves:
-        value = assignment[leaf.variable]
-        pointer_clear, pointer_inner = transferred_pointer_parts(leaf)
+        pointer_clear, pointer_inner = pointer_parts(leaf.role, leaf.pointer_value)
         selected.append(
             {
                 "occurrence": leaf.occurrence + 1,
                 "variable": leaf.variable,
-                "value": value,
+                "value": assignment[leaf.variable],
                 "role": leaf.role,
-                "role_label": {
-                    "left": "filo sinistro",
-                    "right": "filo destro",
-                    "output": "filo di uscita",
-                }[leaf.role],
+                "role_label": ROLE_LABELS[leaf.role],
                 "party": leaf.party,
-                "party_label": {
-                    "alice": "Alice",
-                    "bob": "Bob",
-                    "unassigned": "parte non assegnata",
-                }[leaf.party],
+                "party_label": PARTY_LABELS[leaf.party],
                 "delivery": leaf.delivery,
-                "delivery_label": {
-                    "direct": "consegna diretta",
-                    "simulated_ot": "OT simulato",
-                    "simulated_selection": "selezione locale",
-                }[leaf.delivery],
+                "delivery_label": DELIVERY_LABELS[leaf.delivery],
                 "pointer_clear": pointer_clear,
                 "pointer_inner": pointer_inner,
                 "pointer_clear_blocks": [(1, bit) for bit in pointer_clear],
-                "pointer_inner_blocks": _pointer_blocks(pointer_inner),
-                "image": _data_url(image_png_bytes(leaf.image, scale=4)),
+                "pointer_inner_blocks": pointer_blocks(pointer_inner),
                 "paper_image": _pil_data_url(
-                    printable_transferred_share_to_pil(leaf, scale=4)
+                    share_to_pil(leaf.image, leaf.role, leaf.pointer_value, scale=4)
                 ),
             }
         )
@@ -223,23 +187,18 @@ def _run(payload: dict[str, Any]) -> dict[str, Any]:
         }
         for step in result.steps
     ]
-    direct_count = sum(
-        leaf.delivery == DELIVERY_DIRECT for leaf in transfer.leaves
-    )
-    ot_count = sum(
-        leaf.delivery == DELIVERY_SIMULATED_OT for leaf in transfer.leaves
-    )
+    direct_count = sum(leaf.delivery == DELIVERY_DIRECT for leaf in transfer.leaves)
+    ot_count = sum(leaf.delivery == DELIVERY_SIMULATED_OT for leaf in transfer.leaves)
     response = {
-        "expression": expression,
+        "expression": circuit.expression,
         "assignment": assignment,
         "assignment_text": assignment_text,
-        "side": side,
-        "seed": seed,
+        "side": construction.side,
+        "seed": construction.seed,
         "variables": list(circuit.variables),
         "gate_count": circuit.gate_count,
         "depth": circuit.depth,
         "alternative_count": 2 * len(construction.leaves),
-        "transferred_count": len(transfer.leaves),
         "alice_direct_count": direct_count,
         "bob_ot_count": ot_count,
         "unassigned_count": len(transfer.leaves) - direct_count - ot_count,
@@ -320,17 +279,7 @@ def create_app() -> Flask:
     @app.post("/download-shares")
     def download_shares():
         try:
-            (
-                _expression,
-                assignment,
-                _assignment_text,
-                _side,
-                _seed,
-                _circuit,
-                construction,
-                transfer,
-                evaluation,
-            ) = _evaluate_payload(request.form.to_dict())
+            _, _, _, transfer, evaluation = _evaluate_payload(request.form.to_dict())
             archive = build_print_kit(transfer, evaluation)
             return send_file(
                 archive,
@@ -344,13 +293,7 @@ def create_app() -> Flask:
     @app.post("/download-all-shares")
     def download_all_shares():
         try:
-            (
-                _expression,
-                _side,
-                _seed,
-                _circuit,
-                construction,
-            ) = _build_construction(request.form.to_dict())
+            construction = _build_construction(request.form.to_dict())
             archive = build_construction_kit(construction)
             response = send_file(
                 archive,

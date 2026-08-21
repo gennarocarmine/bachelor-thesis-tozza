@@ -69,8 +69,6 @@ def deterministic_left(bit_count: int, rng: np.random.Generator) -> BinaryImage:
     """Share sinistra dello schema deterministico (2,2), due sotto-pixel per bit."""
     if bit_count < 0:
         raise ValueError("Il numero di bit non può essere negativo.")
-    if bit_count == 0:
-        return np.zeros(0, dtype=np.uint8)
     first_pixels = rng.integers(0, 2, size=bit_count, dtype=np.uint8)
     result = np.empty(2 * bit_count, dtype=np.uint8)
     result[0::2] = first_pixels
@@ -91,8 +89,6 @@ def recover_deterministic(left_share: np.ndarray, right_share: np.ndarray) -> Bi
     right = _binary(right_share, dimensions=1)
     if left.shape != right.shape or left.size % 2:
         raise ValueError("Share deterministiche non allineabili.")
-    if left.size == 0:
-        return np.zeros(0, dtype=np.uint8)
     reconstructed = np.bitwise_or(left, right).reshape(-1, 2)
     return (reconstructed.sum(axis=1) == 2).astype(np.uint8)
 
@@ -102,6 +98,14 @@ def pointer_block(bit: int) -> BinaryImage:
     if bit not in (0, 1):
         raise ValueError("Il pointer deve valere 0 oppure 1.")
     return np.array([1, bit], dtype=np.uint8)
+
+
+def pointer_blocks(pixels: np.ndarray | Iterable[int]) -> list[tuple[int, int]]:
+    """Raggruppa una share di pointer in blocchi 1x2."""
+    values = _binary(pixels, dimensions=1)
+    if values.size % 2:
+        raise ValueError("Una share di pointer deve contenere coppie di sotto-pixel.")
+    return [(int(first), int(second)) for first, second in values.reshape(-1, 2)]
 
 
 def read_pointer(block: np.ndarray | Iterable[int]) -> int:

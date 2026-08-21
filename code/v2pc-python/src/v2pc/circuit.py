@@ -37,9 +37,6 @@ _OPERATIONS = {
     "AND": lambda a, b: a & b,
     "OR": lambda a, b: a | b,
     "XOR": lambda a, b: a ^ b,
-    "NAND": lambda a, b: 1 - (a & b),
-    "NOR": lambda a, b: 1 - (a | b),
-    "XNOR": lambda a, b: 1 - (a ^ b),
 }
 
 

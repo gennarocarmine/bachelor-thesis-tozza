@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .protocol import (
@@ -14,15 +13,12 @@ from .protocol import (
     DELIVERY_SIMULATED_OT,
     Construction,
     Evaluation,
+    PARTY_ALICE,
+    PARTY_BOB,
     Transfer,
+    distribution_label,
 )
-from .render import (
-    PrintableSegment,
-    image_to_pil,
-    printable_layout_to_pil,
-    printable_share_layout,
-    printable_transferred_share_layout,
-)
+from .render import ShareLayout, image_to_pil, layout_to_pil, share_layout
 
 PAGE_WIDTH = 2480
 PAGE_HEIGHT = 3508
@@ -36,21 +32,22 @@ CONTENT_BOTTOM = 3290
 CARD_GAP = 42
 CUT_PADDING = 34
 
-
-def _distribution_label(delivery: str) -> str:
-    return {
-        DELIVERY_DIRECT: "Alice — consegna diretta",
-        DELIVERY_SIMULATED_OT: "Bob — OT simulato",
-        "simulated_selection": "parte non assegnata — selezione locale",
-    }[delivery]
-
-
-def _distribution_folder(delivery: str) -> str:
-    return {
-        DELIVERY_DIRECT: "alice_consegna_diretta",
-        DELIVERY_SIMULATED_OT: "bob_ot_simulato",
-        "simulated_selection": "parte_non_assegnata",
-    }[delivery]
+_DISTRIBUTION_FOLDERS = {
+    DELIVERY_DIRECT: "alice_consegna_diretta",
+    DELIVERY_SIMULATED_OT: "bob_ot_simulato",
+    "simulated_selection": "parte_non_assegnata",
+}
+_CONSTRUCTION_SUBTITLES = {
+    PARTY_ALICE: "Alice - selezione e consegna diretta",
+    PARTY_BOB: "Bob - coppia da predisporre per l'OT fisico",
+}
+_CONSTRUCTION_CHANNELS = {
+    PARTY_ALICE: (
+        "Alice: dopo aver scelto il proprio bit, consegna direttamente "
+        "la share corrispondente"
+    ),
+    PARTY_BOB: "Bob: predisporre la coppia per l'oblivious transfer fisico",
+}
 
 
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -72,16 +69,15 @@ def _registration_mark(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
 class _PrintItem:
     title: str
     subtitle: str
-    layout: np.ndarray
-    segments: tuple[PrintableSegment, ...]
-    role: str
+    png_path: str
+    layout: ShareLayout
 
 
 def _print_scale(items: list[_PrintItem]) -> int:
     if not items:
         raise ValueError("Non ci sono share da inserire nel kit di stampa.")
-    max_width = max(item.layout.shape[1] for item in items)
-    max_height = max(item.layout.shape[0] for item in items)
+    max_width = max(item.layout.pixels.shape[1] for item in items)
+    max_height = max(item.layout.pixels.shape[0] for item in items)
     available_width = PAGE_WIDTH - 2 * (PAGE_MARGIN + CUT_PADDING)
     if max_width > available_width or max_height > MAX_SHARE_HEIGHT:
         raise ValueError(
@@ -98,18 +94,6 @@ def _print_scale(items: list[_PrintItem]) -> int:
     )
 
 
-def _right_half_boundary(item: _PrintItem) -> int | None:
-    labels = [segment.label for segment in item.segments]
-    if item.role != "right" or labels != [
-        "pointer metà sinistra",
-        "share metà sinistra",
-        "pointer metà destra",
-        "share metà destra",
-    ]:
-        return None
-    return item.segments[2].start
-
-
 def _print_pages(
     items: list[_PrintItem],
     *,
@@ -118,14 +102,12 @@ def _print_pages(
     subheading: str,
 ) -> list[Image.Image]:
     pages: list[Image.Image] = []
-    page_count = (len(items) + CARDS_PER_PAGE - 1) // CARDS_PER_PAGE
-    base_size, extra = divmod(len(items), page_count)
-    page_start = 0
+    chunks = [
+        items[start : start + CARDS_PER_PAGE]
+        for start in range(0, len(items), CARDS_PER_PAGE)
+    ]
 
-    for page_index in range(page_count):
-        page_size = base_size + (1 if page_index < extra else 0)
-        page_items = items[page_start : page_start + page_size]
-        page_start += page_size
+    for page_index, page_items in enumerate(chunks):
         row_height = (
             CONTENT_BOTTOM
             - CONTENT_TOP
@@ -156,11 +138,7 @@ def _print_pages(
 
         for row, item in enumerate(page_items):
             top = CONTENT_TOP + row * (row_height + CARD_GAP)
-            strip = printable_layout_to_pil(
-                item.layout,
-                item.segments,
-                scale=scale,
-            )
+            strip = layout_to_pil(item.layout, scale=scale)
             x = (PAGE_WIDTH - strip.width) // 2
             y = top + 105
 
@@ -188,9 +166,8 @@ def _print_pages(
             ):
                 _registration_mark(draw, mark_x, mark_y)
 
-            boundary = _right_half_boundary(item)
-            if boundary is not None:
-                guide_x = x + boundary * scale
+            if item.layout.split_at is not None:
+                guide_x = x + item.layout.split_at * scale
                 draw.line(
                     (guide_x, box[1] - 12, guide_x, y - 4),
                     fill=(70, 70, 70),
@@ -218,11 +195,10 @@ def _print_pages(
                 )
 
         cell_mm = scale * 25.4 / PRINT_DPI
-        page_number = page_index + 1
         draw.text(
             (PAGE_MARGIN, PAGE_HEIGHT - 120),
             f"Scala comune: 1 pixel del protocollo = {cell_mm:.2f} mm "
-            f"({scale} pixel a {PRINT_DPI} dpi) - pagina {page_number}",
+            f"({scale} pixel a {PRINT_DPI} dpi) - pagina {page_index + 1}",
             fill="black",
             font=footer_font,
         )
@@ -230,260 +206,210 @@ def _print_pages(
     return pages
 
 
-def _pages_to_pdf(pages: list[Image.Image]) -> bytes:
-    if not pages:
-        raise ValueError("Il kit di stampa non contiene pagine.")
+def _png_bytes(image: Image.Image) -> bytes:
     stream = BytesIO()
+    image.save(stream, format="PNG", dpi=(PRINT_DPI, PRINT_DPI))
+    return stream.getvalue()
+
+
+def _build_kit(
+    items: list[_PrintItem],
+    *,
+    scale: int,
+    pdf_name: str,
+    heading: str,
+    subheading: str,
+    readme: str,
+    extra: tuple[tuple[str, bytes], ...] = (),
+) -> BytesIO:
+    pages = _print_pages(items, scale=scale, heading=heading, subheading=subheading)
+    pdf = BytesIO()
     pages[0].save(
-        stream,
+        pdf,
         format="PDF",
         resolution=PRINT_DPI,
         save_all=True,
         append_images=pages[1:],
     )
-    return stream.getvalue()
+
+    archive = BytesIO()
+    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as bundle:
+        bundle.writestr(pdf_name, pdf.getvalue())
+        for item in items:
+            bundle.writestr(item.png_path, _png_bytes(layout_to_pil(item.layout, scale=scale)))
+        for name, data in extra:
+            bundle.writestr(name, data)
+        bundle.writestr("LEGGIMI.txt", readme)
+    archive.seek(0)
+    return archive
 
 
-def _selected_print_items(transfer: Transfer) -> list[_PrintItem]:
-    items: list[_PrintItem] = []
-    for index, leaf in enumerate(transfer.leaves, start=1):
-        layout, segments = printable_transferred_share_layout(leaf)
-        items.append(
-            _PrintItem(
-                title=f"S{index:02d} - {leaf.variable}",
-                subtitle=_distribution_label(leaf.delivery),
-                layout=layout,
-                segments=segments,
-                role=leaf.role,
-            )
-        )
-    return items
-
-
-def _construction_print_items(construction: Construction) -> list[_PrintItem]:
-    items: list[_PrintItem] = []
-    for index, leaf in enumerate(construction.leaves, start=1):
-        if leaf.party == "alice":
-            subtitle = "Alice - selezione e consegna diretta"
-        elif leaf.party == "bob":
-            subtitle = "Bob - coppia da predisporre per l'OT fisico"
-        else:
-            subtitle = "Parte non assegnata - selezione locale"
-        for value in (0, 1):
-            layout, segments = printable_share_layout(leaf, value)
-            items.append(
-                _PrintItem(
-                    title=f"S{index:02d} - {leaf.variable} - alternativa {value}",
-                    subtitle=subtitle,
-                    layout=layout,
-                    segments=segments,
-                    role=leaf.role,
-                )
-            )
-    return items
-
-
-def build_print_kit(
-    transfer: Transfer,
-    evaluation: Evaluation,
-) -> BytesIO:
+def build_print_kit(transfer: Transfer, evaluation: Evaluation) -> BytesIO:
     """Restituisce uno ZIP con PDF A4 e PNG delle share selezionate."""
-    items = _selected_print_items(transfer)
-    scale = _print_scale(items)
-    pdf = _pages_to_pdf(
-        _print_pages(
-            items,
-            scale=scale,
-            heading="V2PC - share selezionate",
-            subheading=(
-                "Kit di verifica dopo la selezione degli input; "
-                "le alternative scartate non sono incluse."
+    items = [
+        _PrintItem(
+            title=f"S{index:02d} - {leaf.variable}",
+            subtitle=distribution_label(leaf.party, leaf.delivery),
+            png_path=(
+                f"share_png/{_DISTRIBUTION_FOLDERS[leaf.delivery]}/"
+                f"{index:02d}_{leaf.variable}.png"
             ),
+            layout=share_layout(leaf.image, leaf.role, leaf.pointer_value),
         )
+        for index, leaf in enumerate(transfer.leaves, start=1)
+    ]
+    scale = _print_scale(items)
+
+    assembly_steps = [
+        f"{step.output_name} ({step.operation}): sovrapporre {step.left_source} "
+        f"alla meta {'sinistra' if step.selected_half == 'left' else 'destra'} "
+        f"di {step.right_source}; pointer={step.pointer}; "
+        f"lettura={step.decoded_value}."
+        for step in evaluation.steps
+    ]
+    output_png = _png_bytes(
+        image_to_pil(evaluation.output_image, scale=scale).convert("RGB")
     )
 
-    archive = BytesIO()
-    assembly_steps = []
-    for step in evaluation.steps:
-        selected_half = "sinistra" if step.selected_half == "left" else "destra"
-        assembly_steps.append(
-            f"{step.output_name} ({step.operation}): sovrapporre {step.left_source} "
-            f"alla meta {selected_half} di {step.right_source}; "
-            f"pointer={step.pointer}; lettura={step.decoded_value}."
-        )
-
-    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as bundle:
-        bundle.writestr("v2pc_share_selezionate_A4.pdf", pdf)
-        for index, (leaf, item) in enumerate(
-            zip(transfer.leaves, items),
-            start=1,
-        ):
-            image = printable_layout_to_pil(
-                item.layout,
-                item.segments,
-                scale=scale,
-            )
-            stream = BytesIO()
-            image.save(stream, format="PNG", dpi=(PRINT_DPI, PRINT_DPI))
-            bundle.writestr(
-                f"share_png/{_distribution_folder(leaf.delivery)}/"
-                f"{index:02d}_{leaf.variable}.png",
-                stream.getvalue(),
-            )
-
-        output = BytesIO()
-        image_to_pil(evaluation.output_image, scale=scale).convert("RGB").save(
-            output, format="PNG", dpi=(PRINT_DPI, PRINT_DPI)
-        )
-        bundle.writestr("riferimento_uscita.png", output.getvalue())
-        bundle.writestr(
-            "LEGGIMI.txt",
-            (
-                "KIT DI STAMPA V2PC\n\n"
-                "CONTENUTO\n"
-                "- v2pc_share_selezionate_A4.pdf: fogli pronti per la stampa.\n"
-                "- share_png/: copie digitali delle share ricevute.\n"
-                "- riferimento_uscita.png: immagine attesa al termine della "
-                "ricostruzione.\n\n"
-                "STAMPA E TAGLIO\n"
-                "1. Stampare il PDF su fogli trasparenti al 100% / dimensioni reali.\n"
-                "2. Disattivare qualunque opzione 'Adatta alla pagina'.\n"
-                "3. Usare i crocini come riferimento per taglio e allineamento.\n"
-                "4. Ogni pointer e rappresentato da un blocco 1 x 2 anteposto "
-                "alla share, secondo lo Scheme-(2,2)-NS del paper.\n"
-                "5. Nelle share destre concatenate ogni pointer precede la "
-                "propria meta: pointer sinistro, immagine sinistra, pointer "
-                "destro, immagine destra.\n"
-                "6. Il reticolo sottile mostra i singoli pixel logici, come "
-                "nelle tavole finali del paper.\n"
-                "7. I PNG sono forniti come copie digitali alla stessa scala comune.\n\n"
-                "DISTRIBUZIONE\n"
-                "Le share x di Alice sono indicate come consegna diretta. "
-                "La scelta delle share y di Bob e gia avvenuta mediante OT "
-                "simulato: questo archivio non esegue un oblivious transfer "
-                "fisico o di rete.\n\n"
-                "TAGLIO E SOVRAPPOSIZIONE\n"
-                "Le share di ingresso sono indicate con S01, S02, ... nello "
-                "stesso ordine del PDF. Le porte seguono la numerazione ad "
-                "albero del paper e del C++: G1, G2, G3, G6, G7, ...\n"
-                "A ogni passo, usare il pointer in chiaro della share sinistra "
-                "per scegliere la meta della share destra. Ogni meta destra e "
-                "un gruppo autonomo formato dal proprio pointer seguito dalla "
-                "relativa immagine. Tagliare lungo la guida centrale e tenere "
-                "il gruppo selezionato. Sovrapporre l'immagine scelta alla share "
-                "sinistra e la share del pointer scelta alle share dei pointer "
-                "bit necessari alle porte successive.\n\n"
-                "SEQUENZA PER QUESTO CIRCUITO\n"
-                + "\n".join(assembly_steps)
-                + "\n"
-            ),
-        )
-    archive.seek(0)
-    return archive
+    return _build_kit(
+        items,
+        scale=scale,
+        pdf_name="v2pc_share_selezionate_A4.pdf",
+        heading="V2PC - share selezionate",
+        subheading=(
+            "Kit di verifica dopo la selezione degli input; "
+            "le alternative scartate non sono incluse."
+        ),
+        extra=(("riferimento_uscita.png", output_png),),
+        readme=(
+            "KIT DI STAMPA V2PC\n\n"
+            "CONTENUTO\n"
+            "- v2pc_share_selezionate_A4.pdf: fogli pronti per la stampa.\n"
+            "- share_png/: copie digitali delle share ricevute.\n"
+            "- riferimento_uscita.png: immagine attesa al termine della "
+            "ricostruzione.\n\n"
+            "STAMPA E TAGLIO\n"
+            "1. Stampare il PDF su fogli trasparenti al 100% / dimensioni reali.\n"
+            "2. Disattivare qualunque opzione 'Adatta alla pagina'.\n"
+            "3. Usare i crocini come riferimento per taglio e allineamento.\n"
+            "4. Ogni pointer e rappresentato da un blocco 1 x 2 anteposto "
+            "alla share, secondo lo Scheme-(2,2)-NS del paper.\n"
+            "5. Nelle share destre concatenate ogni pointer precede la "
+            "propria meta: pointer sinistro, immagine sinistra, pointer "
+            "destro, immagine destra.\n"
+            "6. Il reticolo sottile mostra i singoli pixel logici, come "
+            "nelle tavole finali del paper.\n"
+            "7. I PNG sono forniti come copie digitali alla stessa scala comune.\n\n"
+            "DISTRIBUZIONE\n"
+            "Le share x di Alice sono indicate come consegna diretta. "
+            "La scelta delle share y di Bob e gia avvenuta mediante OT "
+            "simulato: questo archivio non esegue un oblivious transfer "
+            "fisico o di rete.\n\n"
+            "TAGLIO E SOVRAPPOSIZIONE\n"
+            "Le share di ingresso sono indicate con S01, S02, ... nello "
+            "stesso ordine del PDF. Le porte seguono la numerazione ad "
+            "albero del paper e del C++: G1, G2, G3, G6, G7, ...\n"
+            "A ogni passo, usare il pointer in chiaro della share sinistra "
+            "per scegliere la meta della share destra. Ogni meta destra e "
+            "un gruppo autonomo formato dal proprio pointer seguito dalla "
+            "relativa immagine. Tagliare lungo la guida centrale e tenere "
+            "il gruppo selezionato. Sovrapporre l'immagine scelta alla share "
+            "sinistra e la share del pointer scelta alle share dei pointer "
+            "bit necessari alle porte successive.\n\n"
+            "SEQUENZA PER QUESTO CIRCUITO\n"
+            + "\n".join(assembly_steps)
+            + "\n"
+        ),
+    )
 
 
-def build_construction_kit(
-    construction: Construction,
-) -> BytesIO:
+def build_construction_kit(construction: Construction) -> BytesIO:
     """ZIP con entrambe le alternative per ogni occorrenza di input."""
-    items = _construction_print_items(construction)
-    scale = _print_scale(items)
-    pdf = _pages_to_pdf(
-        _print_pages(
-            items,
-            scale=scale,
-            heading="V2PC - tutte le alternative",
-            subheading=(
-                "Materiale preparato prima di conoscere gli input: "
-                "due alternative per ogni occorrenza."
+    items = [
+        _PrintItem(
+            title=f"S{index:02d} - {leaf.variable} - alternativa {value}",
+            subtitle=_CONSTRUCTION_SUBTITLES.get(
+                leaf.party, "Parte non assegnata - selezione locale"
+            ),
+            png_path=f"alternative/{index:02d}_{leaf.variable}_value_{value}.png",
+            layout=share_layout(
+                leaf.images[value], leaf.role, leaf.pointer_values[value]
             ),
         )
+        for index, leaf in enumerate(construction.leaves, start=1)
+        for value in (0, 1)
+    ]
+    distribution_rows = [
+        f"S{index:02d} {leaf.variable}: "
+        + _CONSTRUCTION_CHANNELS.get(
+            leaf.party,
+            "Parte non assegnata: il canale deve essere deciso esplicitamente",
+        )
+        + "."
+        for index, leaf in enumerate(construction.leaves, start=1)
+    ]
+
+    return _build_kit(
+        items,
+        scale=_print_scale(items),
+        pdf_name="v2pc_tutte_le_alternative_A4.pdf",
+        heading="V2PC - tutte le alternative",
+        subheading=(
+            "Materiale preparato prima di conoscere gli input: "
+            "due alternative per ogni occorrenza."
+        ),
+        readme=(
+            "COSTRUZIONE V2PC — TUTTE LE ALTERNATIVE\n\n"
+            "CONTENUTO\n"
+            "- v2pc_tutte_le_alternative_A4.pdf: tutte le alternative "
+            "alla stessa scala di stampa.\n"
+            "- alternative/: PNG individuali, due per ogni occorrenza "
+            "di input.\n\n"
+            "COSTRUZIONE E STAMPA\n"
+            "Questa cartella contiene due share per ogni occorrenza di input: "
+            "una per il valore 0 e una per il valore 1.\n"
+            "La costruzione e stata generata senza usare i valori degli input.\n"
+            "Il PDF A4 contiene tutte le alternative a una scala fisica comune, "
+            "con crocini e bordi per il taglio.\n"
+            "Il reticolo sottile mostra i singoli pixel logici come nelle "
+            "tavole finali del paper.\n"
+            "Ogni immagine include i blocchi pointer 1 x 2 anteposti alla share.\n"
+            "Nelle share destre ogni pointer e collocato immediatamente prima "
+            "della meta a cui appartiene, come nelle figure del paper.\n"
+            "Per gli ingressi x, Alice seleziona la propria alternativa e la "
+            "consegna direttamente. Per gli ingressi y, Bob deve ricevere "
+            "l'alternativa corrispondente mediante oblivious transfer.\n"
+            "Stampare il PDF al 100% / dimensioni reali, disattivando "
+            "l'opzione 'Adatta alla pagina', e usare i crocini per il "
+            "taglio e l'allineamento.\n\n"
+            "PIANO DI DISTRIBUZIONE DELLE SHARE\n"
+            "Convenzione della demo: x = input di Alice, y = input di Bob.\n"
+            "Ogni occorrenza e un filo distinto, anche se il nome della "
+            "variabile e ripetuto.\n\n"
+            + "\n".join(distribution_rows)
+            + "\n\n"
+            "PREPARAZIONE DELLA DISTRIBUZIONE FISICA\n"
+            "Questo archivio contiene tutte le alternative ed e prodotto "
+            "prima di conoscere i valori degli input.\n\n"
+            "INGRESSI DI ALICE (x)\n"
+            "Alice sceglie, per ogni propria occorrenza, il file value_0 "
+            "oppure value_1 e lo consegna direttamente a Bob.\n\n"
+            "INGRESSI DI BOB (y)\n"
+            "Per ogni occorrenza devono essere predisposte entrambe le "
+            "alternative value_0 e value_1 e applicato l'oblivious transfer "
+            "fisico descritto nel paper, in modo che Bob ottenga soltanto "
+            "quella del proprio bit senza rivelare ad Alice quale ha scelto.\n"
+            "Nel PDF i valori 0 e 1 sono indicati soltanto fuori dal bordo di "
+            "taglio: le etichette non devono restare sulla trasparenza "
+            "consegnata e le due buste devono essere indistinguibili.\n"
+            "Le due alternative devono restare indistinguibili dall'esterno "
+            "e Alice non deve osservare la scelta. L'alternativa non ricevuta "
+            "non deve entrare nella ricostruzione.\n\n"
+            "LIMITI\n"
+            "Queste indicazioni organizzano i materiali ma non realizzano, "
+            "da sole, le garanzie di sicurezza dell'OT: per l'esperimento "
+            "fisico va seguito integralmente il procedimento e il modello "
+            "di minaccia del paper. La demo web e la CLI eseguono invece "
+            "soltanto una selezione locale simulata.\n"
+        ),
     )
-    archive = BytesIO()
-    distribution_rows = []
-    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as bundle:
-        bundle.writestr("v2pc_tutte_le_alternative_A4.pdf", pdf)
-        item_index = 0
-        for index, leaf in enumerate(construction.leaves, start=1):
-            if leaf.party == "alice":
-                channel = "Alice: dopo aver scelto il proprio bit, consegna direttamente la share corrispondente"
-            elif leaf.party == "bob":
-                channel = "Bob: predisporre la coppia per l'oblivious transfer fisico"
-            else:
-                channel = "Parte non assegnata: il canale deve essere deciso esplicitamente"
-            distribution_rows.append(
-                f"S{index:02d} {leaf.variable}: {channel}."
-            )
-            for value in (0, 1):
-                item = items[item_index]
-                item_index += 1
-                image = printable_layout_to_pil(
-                    item.layout,
-                    item.segments,
-                    scale=scale,
-                )
-                stream = BytesIO()
-                image.save(stream, format="PNG", dpi=(PRINT_DPI, PRINT_DPI))
-                bundle.writestr(
-                    f"alternative/{index:02d}_{leaf.variable}_value_{value}.png",
-                    stream.getvalue(),
-                )
-        bundle.writestr(
-            "LEGGIMI.txt",
-            (
-                "COSTRUZIONE V2PC — TUTTE LE ALTERNATIVE\n\n"
-                "CONTENUTO\n"
-                "- v2pc_tutte_le_alternative_A4.pdf: tutte le alternative "
-                "alla stessa scala di stampa.\n"
-                "- alternative/: PNG individuali, due per ogni occorrenza "
-                "di input.\n\n"
-                "COSTRUZIONE E STAMPA\n"
-                "Questa cartella contiene due share per ogni occorrenza di input: "
-                "una per il valore 0 e una per il valore 1.\n"
-                "La costruzione e stata generata senza usare i valori degli input.\n"
-                "Il PDF A4 contiene tutte le alternative a una scala fisica comune, "
-                "con crocini e bordi per il taglio.\n"
-                "Il reticolo sottile mostra i singoli pixel logici come nelle "
-                "tavole finali del paper.\n"
-                "Ogni immagine include i blocchi pointer 1 x 2 anteposti alla share.\n"
-                "Nelle share destre ogni pointer e collocato immediatamente prima "
-                "della meta a cui appartiene, come nelle figure del paper.\n"
-                "Per gli ingressi x, Alice seleziona la propria alternativa e la "
-                "consegna direttamente. Per gli ingressi y, Bob deve ricevere "
-                "l'alternativa corrispondente mediante oblivious transfer.\n"
-                "Stampare il PDF al 100% / dimensioni reali, disattivando "
-                "l'opzione 'Adatta alla pagina', e usare i crocini per il "
-                "taglio e l'allineamento.\n\n"
-                "PIANO DI DISTRIBUZIONE DELLE SHARE\n"
-                "Convenzione della demo: x = input di Alice, y = input di Bob.\n"
-                "Ogni occorrenza e un filo distinto, anche se il nome della "
-                "variabile e ripetuto.\n\n"
-                + "\n".join(distribution_rows)
-                + "\n\n"
-                "PREPARAZIONE DELLA DISTRIBUZIONE FISICA\n"
-                "Questo archivio contiene tutte le alternative ed e prodotto "
-                "prima di conoscere i valori degli input.\n\n"
-                "INGRESSI DI ALICE (x)\n"
-                "Alice sceglie, per ogni propria occorrenza, il file value_0 "
-                "oppure value_1 e lo consegna direttamente a Bob.\n\n"
-                "INGRESSI DI BOB (y)\n"
-                "Per ogni occorrenza devono essere predisposte entrambe le "
-                "alternative value_0 e value_1 e applicato l'oblivious transfer "
-                "fisico descritto nel paper, in modo che Bob ottenga soltanto "
-                "quella del proprio bit senza rivelare ad Alice quale ha scelto.\n"
-                "Nel PDF i valori 0 e 1 sono indicati soltanto fuori dal bordo di "
-                "taglio: le etichette non devono restare sulla trasparenza "
-                "consegnata e le due buste devono essere indistinguibili.\n"
-                "Le due alternative devono restare indistinguibili dall'esterno "
-                "e Alice non deve osservare la scelta. L'alternativa non ricevuta "
-                "non deve entrare nella ricostruzione.\n\n"
-                "LIMITI\n"
-                "Queste indicazioni organizzano i materiali ma non realizzano, "
-                "da sole, le garanzie di sicurezza dell'OT: per l'esperimento "
-                "fisico va seguito integralmente il procedimento e il modello "
-                "di minaccia del paper. La demo web e la CLI eseguono invece "
-                "soltanto una selezione locale simulata.\n"
-            ),
-        )
-    archive.seek(0)
-    return archive
