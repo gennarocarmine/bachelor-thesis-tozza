@@ -110,8 +110,6 @@ def _build_construction(payload: dict[str, Any]) -> Construction:
             and str(payload.get("construction_side", "")).strip() == str(side)
         ):
             seed = int(stored_seed)
-    # ponytail: sotto 16 la lettura "tutto nero = 1" da' falsi 1 per costruzione
-    # (misurato ~11% a side=8 sulla formula predefinita), non per un difetto.
     if not 16 <= side <= 64:
         raise ValueError("Nella demo web il lato deve essere compreso tra 16 e 64.")
 
@@ -279,8 +277,8 @@ def create_app() -> Flask:
     @app.post("/download-shares")
     def download_shares():
         try:
-            _, _, _, transfer, evaluation = _evaluate_payload(request.form.to_dict())
-            archive = build_print_kit(transfer, evaluation)
+            _, assignment, _, transfer, evaluation = _evaluate_payload(request.form.to_dict())
+            archive = build_print_kit(transfer, evaluation, assignment=assignment)
             return send_file(
                 archive,
                 mimetype="application/zip",

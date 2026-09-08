@@ -11,7 +11,7 @@ from .visual import (
     BinaryImage,
     deterministic_left,
     deterministic_right,
-    multi_secret_share,
+    multi_secret_share_direct as multi_secret_share,
     pointer_block,
     read_pointer,
 )

@@ -51,18 +51,45 @@ def random_grid_share(secret: np.ndarray, rng: np.random.Generator) -> tuple[Bin
     return first, second
 
 
-def multi_secret_share(
+def multi_secret_share_direct(
     first_secret: np.ndarray,
     second_secret: np.ndarray,
     rng: np.random.Generator,
 ) -> tuple[BinaryImage, BinaryImage, BinaryImage]:
-    """Scheme-2-MVCS: la prima share è comune alle due ricostruzioni."""
-    first = _binary(first_secret, dimensions=2)
-    second = _binary(second_secret, dimensions=2)
-    if first.shape != second.shape:
+    """Scheme-2-MVCS (paper 2016, pp. 18–19)."""
+    I0 = _binary(first_secret, dimensions=2)
+    I1 = _binary(second_secret, dimensions=2)
+    if I0.shape != I1.shape:
         raise ValueError("I due segreti devono avere la stessa forma.")
-    common = rng.integers(0, 2, size=first.shape, dtype=np.uint8)
-    return common, np.bitwise_xor(common, first), np.bitwise_xor(common, second)
+
+    # C[colore, numero della matrice, riga]. Ogni coppia è una colonna:
+    # C_bianco = {(0, 0), (1, 1)}; C_nero = {(0, 1), (1, 0)}.
+    C = np.array([[[0, 0], [1, 1]], [[0, 1], [1, 0]]], dtype=np.uint8)
+    sh1 = np.empty_like(I0)
+    sh2 = np.empty_like(I0)
+    sh3 = np.empty_like(I0)
+
+    height, width = I0.shape
+    for i in range(height):
+        for j in range(width):
+            r = rng.integers(0, 2)
+            # Usa la matrice r di C_{I0(i,j)} per sh1 e sh2.
+            matrix = C[I0[i, j], r]
+            sh1[i, j] = matrix[0]
+            sh2[i, j] = matrix[1]
+
+            if I1[i, j] == 1:
+                if sh1[i, j] == 0:
+                    sh3[i, j] = 1
+                elif sh1[i, j] == 1:
+                    sh3[i, j] = 0
+            elif I1[i, j] == 0:
+                if sh1[i, j] == 1:
+                    sh3[i, j] = 1
+                elif sh1[i, j] == 0:
+                    sh3[i, j] = 0
+
+    return sh1, sh2, sh3
 
 
 def deterministic_left(bit_count: int, rng: np.random.Generator) -> BinaryImage:

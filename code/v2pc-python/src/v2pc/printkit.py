@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -26,11 +27,17 @@ PAGE_MARGIN = 180
 PRINT_DPI = 300
 MAX_PRINT_SCALE = 64
 MAX_SHARE_HEIGHT = 480
-CARDS_PER_PAGE = 4
+CARDS_PER_PAGE = 3
 CONTENT_TOP = 390
 CONTENT_BOTTOM = 3290
 CARD_GAP = 42
 CUT_PADDING = 34
+LABEL_GAP = 48
+REGISTRATION_RADIUS = 18
+TEXT_MARK_GAP = 24
+LABEL_MAX_WIDTH = 320
+LABEL_MIN_FONT = 28
+LABEL_MAX_FONT = 40
 
 _DISTRIBUTION_FOLDERS = {
     DELIVERY_DIRECT: "alice_consegna_diretta",
@@ -51,15 +58,25 @@ _CONSTRUCTION_CHANNELS = {
 
 
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    names = (
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold
+        else "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "arialbd.ttf" if bold else "arial.ttf",
+    )
+    for name in names:
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            pass
     try:
-        return ImageFont.truetype(name, size)
-    except OSError:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Compatibility with Pillow 10.0's bitmap fallback.
         return ImageFont.load_default()
 
 
 def _registration_mark(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
-    radius = 18
+    radius = REGISTRATION_RADIUS
     draw.line((x - radius, y, x + radius, y), fill="black", width=3)
     draw.line((x, y - radius, x, y + radius), fill="black", width=3)
     draw.ellipse((x - 5, y - 5, x + 5, y + 5), outline="black", width=2)
@@ -71,6 +88,41 @@ class _PrintItem:
     subtitle: str
     png_path: str
     layout: ShareLayout
+    input_label: str | None = None
+
+
+def _label_reserve(items: list[_PrintItem]) -> int:
+    """Reserve room outside the cutting border; keep one scale per kit."""
+    font = _font(LABEL_MAX_FONT)
+    widths = [
+        font.getbbox(item.input_label)[2] - font.getbbox(item.input_label)[0]
+        for item in items if item.input_label
+    ]
+    return min(LABEL_MAX_WIDTH, max(widths)) + LABEL_GAP if widths else 0
+
+
+def _draw_input_label(draw, label: str, *, box: tuple, height: int) -> None:
+    size = max(LABEL_MIN_FONT, min(LABEL_MAX_FONT, round(height * 0.12)))
+    font = _font(size)
+    # Wrap unusually long variable names instead of shrinking them illegibly.
+    lines = []
+    line = ""
+    for char in label:
+        if line and draw.textlength(line + char, font=font) > LABEL_MAX_WIDTH:
+            lines.append(line)
+            line = ""
+        line += char
+    lines.append(line)
+    text = "\n".join(lines)
+    bounds = draw.multiline_textbbox((0, 0), text, font=font, spacing=4)
+    width, text_height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+    if text_height > height + 2 * CUT_PADDING:
+        raise ValueError("Nome di variabile troppo lungo per l'etichetta A4.")
+    draw.multiline_text(
+        (box[0] - LABEL_GAP - width - bounds[0],
+         (box[1] + box[3] - text_height) // 2 - bounds[1]),
+        text, fill="black", font=font, spacing=4, align="right",
+    )
 
 
 def _print_scale(items: list[_PrintItem]) -> int:
@@ -78,7 +130,7 @@ def _print_scale(items: list[_PrintItem]) -> int:
         raise ValueError("Non ci sono share da inserire nel kit di stampa.")
     max_width = max(item.layout.pixels.shape[1] for item in items)
     max_height = max(item.layout.pixels.shape[0] for item in items)
-    available_width = PAGE_WIDTH - 2 * (PAGE_MARGIN + CUT_PADDING)
+    available_width = PAGE_WIDTH - 2 * (PAGE_MARGIN + CUT_PADDING) - _label_reserve(items)
     if max_width > available_width or max_height > MAX_SHARE_HEIGHT:
         raise ValueError(
             "Le share sono troppo larghe per un foglio A4 anche alla scala minima; "
@@ -102,15 +154,17 @@ def _print_pages(
     subheading: str,
 ) -> list[Image.Image]:
     pages: list[Image.Image] = []
+    label_reserve = _label_reserve(items)
     chunks = [
         items[start : start + CARDS_PER_PAGE]
         for start in range(0, len(items), CARDS_PER_PAGE)
     ]
 
     for page_index, page_items in enumerate(chunks):
+        content_top = CONTENT_TOP if page_index == 0 else PAGE_MARGIN
         row_height = (
             CONTENT_BOTTOM
-            - CONTENT_TOP
+            - content_top
             - CARD_GAP * (len(page_items) - 1)
         ) // len(page_items)
         page = Image.new("RGB", (PAGE_WIDTH, PAGE_HEIGHT), "white")
@@ -122,25 +176,32 @@ def _print_pages(
         guide_font = _font(24, bold=True)
         footer_font = _font(27)
 
-        draw.text((PAGE_MARGIN, 100), heading, fill="black", font=title_font)
-        draw.text((PAGE_MARGIN, 185), subheading, fill="black", font=subtitle_font)
-        draw.text(
-            (PAGE_MARGIN, 235),
-            "Stampare al 100% / dimensioni reali. Disattivare 'Adatta alla pagina'.",
-            fill="black",
-            font=subtitle_font,
-        )
-        draw.line(
-            (PAGE_MARGIN, 310, PAGE_WIDTH - PAGE_MARGIN, 310),
-            fill=(130, 130, 130),
-            width=2,
-        )
+        # Intestazione e istruzioni una sola volta; scala e pagina restano
+        # nel piè di pagina di ogni foglio, anche se stampato separatamente.
+        if page_index == 0:
+            draw.text((PAGE_MARGIN, 100), heading, fill="black", font=title_font)
+            draw.text((PAGE_MARGIN, 185), subheading, fill="black", font=subtitle_font)
+            draw.text(
+                (PAGE_MARGIN, 235),
+                "Stampare al 100% / dimensioni reali. Disattivare 'Adatta alla pagina'.",
+                fill="black",
+                font=subtitle_font,
+            )
+            draw.line(
+                (PAGE_MARGIN, 310, PAGE_WIDTH - PAGE_MARGIN, 310),
+                fill=(130, 130, 130),
+                width=2,
+            )
 
         for row, item in enumerate(page_items):
-            top = CONTENT_TOP + row * (row_height + CARD_GAP)
+            top = content_top + row * (row_height + CARD_GAP)
             strip = layout_to_pil(item.layout, scale=scale)
-            x = (PAGE_WIDTH - strip.width) // 2
-            y = top + 105
+            x = (PAGE_WIDTH - strip.width - label_reserve) // 2 + label_reserve
+            detail_bottom = draw.textbbox(
+                (PAGE_MARGIN, top + 50), item.subtitle, font=card_detail_font
+            )[3]
+            y = max(top + 155, detail_bottom + TEXT_MARK_GAP
+                    + REGISTRATION_RADIUS + CUT_PADDING)
 
             draw.text((PAGE_MARGIN, top), item.title, fill="black", font=card_font)
             draw.text(
@@ -157,6 +218,8 @@ def _print_pages(
                 x + strip.width + CUT_PADDING,
                 y + strip.height + CUT_PADDING,
             )
+            if item.input_label:
+                _draw_input_label(draw, item.input_label, box=box, height=strip.height)
             draw.rectangle(box, outline=(105, 105, 105), width=2)
             for mark_x, mark_y in (
                 (box[0], box[1]),
@@ -187,7 +250,7 @@ def _print_pages(
                             guide_x - label_width // 2,
                             PAGE_WIDTH - PAGE_MARGIN - label_width,
                         )),
-                        box[3] + 14,
+                        box[3] + REGISTRATION_RADIUS + TEXT_MARK_GAP,
                     ),
                     label,
                     fill=(70, 70, 70),
@@ -220,6 +283,7 @@ def _build_kit(
     heading: str,
     subheading: str,
     readme: str,
+    readme_en: str,
     extra: tuple[tuple[str, bytes], ...] = (),
 ) -> BytesIO:
     pages = _print_pages(items, scale=scale, heading=heading, subheading=subheading)
@@ -239,13 +303,32 @@ def _build_kit(
             bundle.writestr(item.png_path, _png_bytes(layout_to_pil(item.layout, scale=scale)))
         for name, data in extra:
             bundle.writestr(name, data)
-        bundle.writestr("LEGGIMI.txt", readme)
+        bundle.writestr(
+            "LEGGIMI.txt",
+            "ISTRUZIONI / INSTRUCTIONS\n"
+            "Italiano: prima sezione. English: second section below.\n\n"
+            "=== ITALIANO ===\n\n"
+            + readme.rstrip()
+            + "\n\n=== ENGLISH ===\n\n"
+            + readme_en.rstrip()
+            + "\n",
+        )
     archive.seek(0)
     return archive
 
 
-def build_print_kit(transfer: Transfer, evaluation: Evaluation) -> BytesIO:
+def build_print_kit(
+    transfer: Transfer,
+    evaluation: Evaluation,
+    *,
+    assignment: Mapping[str, int] | None = None,
+) -> BytesIO:
     """Restituisce uno ZIP con PDF A4 e PNG delle share selezionate."""
+    # Optional display metadata: reconstruction still receives only Transfer.
+    if assignment is not None:
+        for leaf in transfer.leaves:
+            if leaf.variable not in assignment or assignment[leaf.variable] not in (0, 1):
+                raise ValueError(f"Valore 0/1 mancante o non valido per {leaf.variable}.")
     items = [
         _PrintItem(
             title=f"S{index:02d} - {leaf.variable}",
@@ -255,6 +338,10 @@ def build_print_kit(transfer: Transfer, evaluation: Evaluation) -> BytesIO:
                 f"{index:02d}_{leaf.variable}.png"
             ),
             layout=share_layout(leaf.image, leaf.role, leaf.pointer_value),
+            input_label=(
+                f"{leaf.variable} = {int(assignment[leaf.variable])}"
+                if assignment is not None else None
+            ),
         )
         for index, leaf in enumerate(transfer.leaves, start=1)
     ]
@@ -265,6 +352,12 @@ def build_print_kit(transfer: Transfer, evaluation: Evaluation) -> BytesIO:
         f"alla meta {'sinistra' if step.selected_half == 'left' else 'destra'} "
         f"di {step.right_source}; pointer={step.pointer}; "
         f"lettura={step.decoded_value}."
+        for step in evaluation.steps
+    ]
+    assembly_steps_en = [
+        f"{step.output_name} ({step.operation}): overlay {step.left_source} "
+        f"with the {step.selected_half} half of {step.right_source}; "
+        f"pointer={step.pointer}; readout={step.decoded_value}."
         for step in evaluation.steps
     ]
     output_png = _png_bytes(
@@ -300,6 +393,17 @@ def build_print_kit(transfer: Transfer, evaluation: Evaluation) -> BytesIO:
             "6. Il reticolo sottile mostra i singoli pixel logici, come "
             "nelle tavole finali del paper.\n"
             "7. I PNG sono forniti come copie digitali alla stessa scala comune.\n\n"
+            + (
+                "ETICHETTE DEL KIT DIMOSTRATIVO\n"
+                "Accanto a ogni share nel PDF sono indicati variabile e valore "
+                "selezionato. Le etichette sono fuori dal bordo di taglio: "
+                "non coprono immagini o pointer e vanno escluse dal ritaglio. "
+                "Il foglio etichettato espone gli input ed e destinato alla "
+                "verifica didattica dopo la selezione, non alla distribuzione "
+                "riservata tramite OT. I PNG contengono soltanto le share.\n\n"
+                if assignment is not None else ""
+            )
+            +
             "DISTRIBUZIONE\n"
             "Le share x di Alice sono indicate come consegna diretta. "
             "La scelta delle share y di Bob e gia avvenuta mediante OT "
@@ -318,6 +422,56 @@ def build_print_kit(transfer: Transfer, evaluation: Evaluation) -> BytesIO:
             "bit necessari alle porte successive.\n\n"
             "SEQUENZA PER QUESTO CIRCUITO\n"
             + "\n".join(assembly_steps)
+            + "\n"
+        ),
+        readme_en=(
+            "V2PC PRINT KIT\n\n"
+            "CONTENTS\n"
+            "- v2pc_share_selezionate_A4.pdf: print-ready sheets.\n"
+            "- share_png/: digital copies of the received shares.\n"
+            "- riferimento_uscita.png: reference image obtained at the end "
+            "of reconstruction.\n\n"
+            "PRINTING AND CUTTING\n"
+            "1. Print the PDF on transparent sheets at 100% / actual size.\n"
+            "2. Disable any 'Fit to page' option.\n"
+            "3. Use the registration marks for cutting and alignment.\n"
+            "4. Each pointer is a 1 x 2 block prepended to the share, "
+            "following Scheme-(2,2)-NS in the paper.\n"
+            "5. In concatenated right shares, each pointer precedes its "
+            "own half: left pointer, left image, right pointer, right image.\n"
+            "6. The thin grid shows individual logical pixels, as in the "
+            "final plates of the paper.\n"
+            "7. PNG files are digital copies at the same common scale.\n\n"
+            + (
+                "DEMONSTRATION KIT LABELS\n"
+                "Each share in the PDF has its variable and selected value "
+                "printed alongside it. Labels are outside the cutting border: "
+                "they do not cover images or pointers and must be excluded "
+                "from the cutout. The labelled sheet reveals the inputs and "
+                "is intended for educational verification after selection, "
+                "not private distribution through OT. PNG files contain "
+                "only the shares.\n\n"
+                if assignment is not None else ""
+            )
+            +
+            "DISTRIBUTION\n"
+            "Alice's x shares are marked for direct delivery. "
+            "Bob's y shares have already been selected through simulated "
+            "OT: this archive does not implement physical or network "
+            "oblivious transfer.\n\n"
+            "CUTTING AND OVERLAYING\n"
+            "Input shares are identified as S01, S02, ... in the same "
+            "order as in the PDF. Gates follow the tree numbering used in "
+            "the paper and the C++ implementation: G1, G2, G3, G6, G7, ...\n"
+            "At each step, read the clear pointer on the left share to "
+            "choose a half of the right share. Each right half is a "
+            "self-contained group consisting of its pointer followed by "
+            "its image. Cut along the central guide and keep the selected "
+            "group. Overlay the selected image with the left share, and "
+            "overlay the selected pointer share with the shares of the "
+            "pointer bits needed by subsequent gates.\n\n"
+            "SEQUENCE FOR THIS CIRCUIT\n"
+            + "\n".join(assembly_steps_en)
             + "\n"
         ),
     )
@@ -344,6 +498,22 @@ def build_construction_kit(construction: Construction) -> BytesIO:
         + _CONSTRUCTION_CHANNELS.get(
             leaf.party,
             "Parte non assegnata: il canale deve essere deciso esplicitamente",
+        )
+        + "."
+        for index, leaf in enumerate(construction.leaves, start=1)
+    ]
+    channels_en = {
+        PARTY_ALICE: (
+            "Alice: after choosing her input bit, directly deliver the "
+            "corresponding share"
+        ),
+        PARTY_BOB: "Bob: prepare the pair for physical oblivious transfer",
+    }
+    distribution_rows_en = [
+        f"S{index:02d} {leaf.variable}: "
+        + channels_en.get(
+            leaf.party,
+            "Unassigned party: the delivery channel must be explicitly chosen",
         )
         + "."
         for index, leaf in enumerate(construction.leaves, start=1)
@@ -411,5 +581,58 @@ def build_construction_kit(construction: Construction) -> BytesIO:
             "fisico va seguito integralmente il procedimento e il modello "
             "di minaccia del paper. La demo web e la CLI eseguono invece "
             "soltanto una selezione locale simulata.\n"
+        ),
+        readme_en=(
+            "V2PC CONSTRUCTION - ALL ALTERNATIVES\n\n"
+            "CONTENTS\n"
+            "- v2pc_tutte_le_alternative_A4.pdf: all alternatives "
+            "at the same printing scale.\n"
+            "- alternative/: individual PNG files, two per input "
+            "occurrence.\n\n"
+            "CONSTRUCTION AND PRINTING\n"
+            "This folder contains two shares for each input occurrence: "
+            "one for value 0 and one for value 1.\n"
+            "The construction was generated without using input values.\n"
+            "The A4 PDF contains all alternatives at a common physical "
+            "scale, with registration marks and cutting borders.\n"
+            "The thin grid shows individual logical pixels, as in the "
+            "final plates of the paper.\n"
+            "Each image includes 1 x 2 pointer blocks prepended to the share.\n"
+            "In right shares, each pointer is placed immediately before "
+            "the half it belongs to, as in the paper's figures.\n"
+            "For x inputs, Alice selects her alternative and delivers it "
+            "directly. For y inputs, Bob must receive the corresponding "
+            "alternative through oblivious transfer.\n"
+            "Print the PDF at 100% / actual size, disable 'Fit to page', "
+            "and use the registration marks for cutting and alignment.\n\n"
+            "SHARE DISTRIBUTION PLAN\n"
+            "Demo convention: x = Alice's input, y = Bob's input.\n"
+            "Each occurrence is a distinct wire, even when a variable "
+            "name is repeated.\n\n"
+            + "\n".join(distribution_rows_en)
+            + "\n\n"
+            "PREPARING PHYSICAL DISTRIBUTION\n"
+            "This archive contains all alternatives and is produced "
+            "before input values are known.\n\n"
+            "ALICE'S INPUTS (x)\n"
+            "For each of her input occurrences, Alice chooses the "
+            "value_0 or value_1 file and delivers it directly to Bob.\n\n"
+            "BOB'S INPUTS (y)\n"
+            "For each occurrence, prepare both alternatives, value_0 "
+            "and value_1, and apply the physical oblivious transfer "
+            "described in the paper, so that Bob obtains only the share "
+            "for his bit without revealing his choice to Alice.\n"
+            "In the PDF, values 0 and 1 are printed only outside the "
+            "cutting border: labels must not remain on the delivered "
+            "transparency, and the two envelopes must be indistinguishable.\n"
+            "The two alternatives must remain indistinguishable from "
+            "the outside, and Alice must not observe the choice. "
+            "The alternative not received must not enter reconstruction.\n\n"
+            "LIMITATIONS\n"
+            "These instructions organize the materials but do not by "
+            "themselves provide OT security guarantees: the physical "
+            "experiment must follow the complete procedure and threat "
+            "model in the paper. The web demo and CLI only perform a "
+            "locally simulated selection.\n"
         ),
     )
