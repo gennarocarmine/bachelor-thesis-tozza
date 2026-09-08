@@ -6,6 +6,7 @@
   <title>V2PC</title>
   <meta name="description" content="Demo didattica del protocollo Visual Two-Party Computation">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='language.js') }}"></script>
   <script defer src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
 <body>
@@ -77,6 +78,13 @@
   {% endmacro %}
 
   <main>
+    <div class="language-bar" data-no-translate>
+      <label for="language">Lingua / Language</label>
+      <select id="language" aria-label="Lingua / Language">
+        <option value="it">Italiano</option>
+        <option value="en">English</option>
+      </select>
+    </div>
     <header class="hero">
       <h1>Visual Two-Party Computation</h1>
       <p class="lede">
@@ -145,12 +153,12 @@
           </label>
         </div>
         <div class="action-row">
-          <button id="build-all-shares" type="submit"
-                  formaction="{{ url_for('download_all_shares') }}">
-            Costruisci tutte le share
-          </button>
-          <button class="secondary-button" type="submit">
+          <button type="submit">
             Simula il trasferimento e ricostruisci
+          </button>
+          <button id="build-all-shares" class="secondary-button" type="button"
+                  data-action="{{ url_for('download_all_shares') }}">
+            Scarica tutte le alternative
           </button>
         </div>
       </form>
@@ -193,16 +201,16 @@
       <article class="panel protocol-note">
         <h2>Separazione del protocollo</h2>
         <ol class="protocol-flow">
-          <li><strong>Costruzione:</strong> {{ result.alternative_count }} alternative
-            generate senza usare gli input.</li>
+          <li><strong>Costruzione:</strong> <span>{{ result.alternative_count }} alternative
+            generate senza usare gli input.</span></li>
           <li><strong>Distribuzione:</strong>
-            {{ result.alice_direct_count }} share di Alice consegnate direttamente;
-            {{ result.bob_ot_count }} share di Bob scelte mediante OT simulato.
+            <span>{{ result.alice_direct_count }} share di Alice consegnate direttamente;
+            {{ result.bob_ot_count }} share di Bob scelte mediante OT simulato.</span>
             {% if result.unassigned_count %}
-              {{ result.unassigned_count }} share con parte non assegnata sono
-              scelte localmente.
+              <span>{{ result.unassigned_count }} share con parte non assegnata sono
+              scelte localmente.</span>
             {% endif %}
-            Le alternative scartate non entrano nella ricostruzione.</li>
+            <span>Le alternative scartate non entrano nella ricostruzione.</span></li>
           <li><strong>Ricostruzione:</strong> il pointer recuperato seleziona la metà
             corretta a ogni porta.</li>
         </ol>

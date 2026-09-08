@@ -29,6 +29,23 @@ main {
 
 h1, h2, h3, p { margin-top: 0; }
 
+.language-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.language-bar select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 10px;
+}
+
 .hero {
   max-width: 760px;
   margin-bottom: 36px;

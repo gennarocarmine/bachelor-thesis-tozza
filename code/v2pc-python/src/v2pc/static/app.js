@@ -1,6 +1,8 @@
 (() => {
   "use strict";
 
+  const t = (text) => window.v2pcI18n?.translate(text) ?? text;
+
   const expression = document.querySelector("#expression");
   const controls = document.querySelector("#variable-controls");
   const assignment = document.querySelector("#assignment");
@@ -85,13 +87,14 @@
     updateTimer = window.setTimeout(renderVariables, 120);
   });
   controls.addEventListener("change", syncAssignment);
-  async function downloadAllShares(event) {
-    event.preventDefault();
-    syncAssignment();
+
+  async function downloadAllShares() {
+    window.clearTimeout(updateTimer);
+    renderVariables();
     buildAllShares.disabled = true;
     let archiveUrl;
     try {
-      const response = await fetch(buildAllShares.formAction, {
+      const response = await fetch(buildAllShares.dataset.action, {
         method: "POST",
         body: new FormData(form),
       });
@@ -115,7 +118,7 @@
       link.click();
       link.remove();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Download non riuscito.");
+      window.alert(t(error instanceof Error ? error.message : "Download non riuscito."));
     } finally {
       if (archiveUrl) {
         window.setTimeout(() => URL.revokeObjectURL(archiveUrl), 1000);
@@ -124,12 +127,11 @@
     }
   }
 
-  form.addEventListener("submit", (event) => {
-    syncAssignment();
-    if (event.submitter === buildAllShares) {
-      downloadAllShares(event);
-    }
+  form.addEventListener("submit", () => {
+    window.clearTimeout(updateTimer);
+    renderVariables();
   });
+  buildAllShares?.addEventListener("click", downloadAllShares);
   syncAssignment();
 
   function fitCircuit() {
@@ -155,6 +157,7 @@
 
   window.addEventListener("load", fitCircuit);
   window.addEventListener("resize", fitCircuit);
+  document.addEventListener("v2pc:languagechange", fitCircuit);
   if ("ResizeObserver" in window) {
     new ResizeObserver(fitCircuit).observe(document.querySelector("main"));
   }
@@ -162,6 +165,16 @@
 
   const circuitDownload = document.querySelector("#download-circuit");
   const circuitDownloadStatus = document.querySelector("#download-circuit-status");
+
+  function setCircuitStatus(message) {
+    if (circuitDownloadStatus) {
+      circuitDownloadStatus.dataset.message = message;
+      circuitDownloadStatus.textContent = t(message);
+    }
+  }
+  document.addEventListener("v2pc:languagechange", () => {
+    setCircuitStatus(circuitDownloadStatus?.dataset.message ?? "");
+  });
 
   function imagesReady(stage) {
     return Promise.all(
@@ -211,8 +224,6 @@
   }
 
   function roundedRectangle(context, rect, radii = 0) {
-    // ponytail: CanvasRenderingContext2D.roundRect limita da se' i raggi a meta'
-    // lato; sostituisce il tracciato manuale con quadraticCurveTo.
     context.beginPath();
     context.roundRect(rect.x, rect.y, rect.width, rect.height, radii);
     context.closePath();
@@ -422,7 +433,7 @@
     }
 
     circuitDownload.disabled = true;
-    circuitDownloadStatus.textContent = "Preparazione del PNG…";
+    setCircuitStatus("Preparazione del PNG…");
     let pngUrl;
     const previousTransform = stage.style.transform;
     const previousMargin = stage.style.marginLeft;
@@ -458,10 +469,9 @@
       document.body.append(link);
       link.click();
       link.remove();
-      circuitDownloadStatus.textContent = "Immagine scaricata.";
+      setCircuitStatus("Immagine scaricata.");
     } catch (error) {
-      circuitDownloadStatus.textContent =
-        error instanceof Error ? error.message : "Download non riuscito.";
+      setCircuitStatus(error instanceof Error ? error.message : "Download non riuscito.");
     } finally {
       if (pngUrl) {
         window.setTimeout(() => URL.revokeObjectURL(pngUrl), 1000);
